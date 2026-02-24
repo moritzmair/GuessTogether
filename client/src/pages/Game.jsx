@@ -13,6 +13,7 @@ L.Icon.Default.mergeOptions({
 export default function Game({ session, panoData }) {
   const mapRef = useRef(null);
   const panoRef = useRef(null);
+  const svInstanceRef = useRef(null);
   const leafletMap = useRef(null);
   const markerRef = useRef(null);
 
@@ -29,6 +30,14 @@ export default function Game({ session, panoData }) {
     if (!isHost || !panoData || !panoRef.current) return;
     let cancelled = false;
     setPanoError(false);
+
+    // Altes Panorama zerstören
+    if (svInstanceRef.current) {
+      svInstanceRef.current.setVisible(false);
+      svInstanceRef.current = null;
+      panoRef.current.innerHTML = '';
+    }
+
     (async () => {
       if (!window.google?.maps?.StreetViewPanorama) {
         const { key } = await fetch('/api/maps-key').then((r) => r.json());
@@ -54,6 +63,7 @@ export default function Game({ session, panoData }) {
         motionTrackingControl: false,
         showRoadLabels: false,
       });
+      svInstanceRef.current = sv;
       sv.addListener('status_changed', () => {
         if (!cancelled && sv.getStatus() !== 'OK') setPanoError(true);
       });
