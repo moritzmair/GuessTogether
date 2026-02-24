@@ -1,8 +1,39 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
+
+const MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+
+// Startup: API-Key prüfen via Metadata-Endpoint (kein Bild-Quota)
+function checkApiKey() {
+  return new Promise((resolve, reject) => {
+    if (!MAPS_KEY) {
+      reject(new Error('GOOGLE_MAPS_API_KEY fehlt in server/.env'));
+      return;
+    }
+    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=48.8584,2.2945&key=${MAPS_KEY}`;
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.status === 'REQUEST_DENIED') {
+            reject(new Error(`API-Key ungültig oder Street View Static API nicht aktiviert: ${json.error_message || json.status}`));
+          } else {
+            console.log(`✅ Google Maps API Key OK (Status: ${json.status})`);
+            resolve();
+          }
+        } catch {
+          reject(new Error('Ungültige Antwort von Google Maps API'));
+        }
+      });
+    }).on('error', reject);
+  });
+}
 
 const app = express();
 app.use(cors());
@@ -16,10 +47,7 @@ const io = new Server(server, {
 // In-Memory Sessions
 const sessions = {};
 
-const MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
-
 function svUrl(lat, lng, heading = 0, pitch = 0) {
-  if (!MAPS_KEY) return ''; // Platzhalter → Client nutzt picsum
   return `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${lat},${lng}&heading=${heading}&pitch=${pitch}&key=${MAPS_KEY}`;
 }
 
@@ -51,6 +79,17 @@ function makeCode() {
 }
 
 app.get('/health', (_, res) => res.json({ ok: true }));
+
+// Proxy-Endpoint: Bild wird serverseitig von Google geladen → kein API-Key im Browser
+app.get('/api/image/:code', (req, res) => {
+  const session = sessions[req.params.code];
+  if (!session || !session.location) return res.status(404).send('Nicht gefunden');
+  const url = session.location.image;
+  https.get(url, (gRes) => {
+    res.setHeader('Content-Type', gRes.headers['content-type'] || 'image/jpeg');
+    gRes.pipe(res);
+  }).on('error', () => res.status(502).send('Bildfehler'));
+});
 
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
@@ -101,7 +140,8 @@ io.on('connection', (socket) => {
     session.phase = 'game';
     session.pins = {};
 
-    io.to(code).emit('game-started', { image: location.image });
+    // Proxy-URL statt direkter Google-URL → API-Key bleibt serverseitig
+    io.to(code).emit('game-started', { image: `/api/image/${code}` });
     console.log('game started:', code, location.label);
   });
 
@@ -175,4 +215,6 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server läuft auf Port ${PORT}`));
+checkApiKey()
+  .then(() => server.listen(PORT, () => console.log(`Server läuft auf Port ${PORT}`)))
+  .catch((err) => { console.error(`\n❌ Server-Start abgebrochen: ${err.message}\n`); process.exit(1); });

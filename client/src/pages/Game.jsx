@@ -16,7 +16,8 @@ export default function Game({ session, onRoundEnd }) {
   const leafletMap = useRef(null);
   const markerRef = useRef(null);
 
-  const [image, setImage] = useState(null);
+  // Bild-URL aus Session-Code – kein Socket-Event nötig (game-started kommt vor Mount)
+  const [image, setImage] = useState(`/api/image/${session.code}`);
   const [pin, setPin] = useState(null); // { lat, lng }
   const [submitted, setSubmitted] = useState(false);
   const [pinCount, setPinCount] = useState(0);
@@ -49,7 +50,6 @@ export default function Game({ session, onRoundEnd }) {
 
   // Socket-Events
   useEffect(() => {
-    socket.on('game-started', ({ image: img }) => setImage(img));
     socket.on('pin-placed', ({ pinCount: pc, totalPlayers: tp }) => {
       setPinCount(pc);
       setTotalPlayers(tp);
@@ -57,7 +57,6 @@ export default function Game({ session, onRoundEnd }) {
     socket.on('round-ended', (data) => onRoundEnd(data));
 
     return () => {
-      socket.off('game-started');
       socket.off('pin-placed');
       socket.off('round-ended');
     };
@@ -76,10 +75,7 @@ export default function Game({ session, onRoundEnd }) {
     setSubmitted(true);
   }
 
-  // Platzhalter-Bild wenn kein API-Key gesetzt
-  const displayImage = image && !image.includes('DEIN_API_KEY')
-    ? image
-    : `https://picsum.photos/seed/${session.code}/800/500`;
+  const displayImage = image;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
