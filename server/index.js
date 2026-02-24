@@ -13,30 +13,14 @@ function checkApiKey() {
       reject(new Error('GOOGLE_MAPS_API_KEY fehlt in server/.env'));
       return;
     }
-    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=48.8584,2.2945&key=${MAPS_KEY}`;
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.status === 'REQUEST_DENIED') {
-            reject(new Error(`API-Key ungültig oder Street View Static API nicht aktiviert: ${json.error_message || json.status}`));
-          } else {
-            console.log(`✅ Google Maps API Key OK (Status: ${json.status})`);
-            resolve();
-          }
-        } catch {
-          reject(new Error('Ungültige Antwort von Google Maps API'));
-        }
-      });
-    }).on('error', reject);
+    resolve();
   });
 }
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use((req, _, next) => { console.log(`→ ${req.method} ${req.url}`); next(); });
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -103,9 +87,7 @@ async function fetchAutoHeading(lat, lng) {
   return bestHeading ?? 0;
 }
 
-function svUrl(lat, lng, heading) {
-  return `https://maps.googleapis.com/maps/api/streetview?size=2048x2048&location=${lat},${lng}&heading=${heading}&pitch=0&fov=120&source=outdoor&key=${MAPS_KEY}`;
-}
+const TOTAL_ROUNDS = 5;
 
 function makeCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -126,8 +108,13 @@ async function randomStreetViewLocation(maxTries = 100) {
     const lat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
     const lng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
     const meta = await fetchMetadata(lat, lng);
-    if (meta.status === 'OK') {
-      return { lat: meta.location.lat, lng: meta.location.lng, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
+    if (meta.status === 'OK' && meta.pano_id) {
+      return {
+        lat: meta.location.lat,
+        lng: meta.location.lng,
+        pano_id: meta.pano_id,
+        label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}`
+      };
     }
   }
   throw new Error('Kein Street View gefunden');
@@ -135,15 +122,7 @@ async function randomStreetViewLocation(maxTries = 100) {
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 
-app.get('/api/image/:code', (req, res) => {
-  const session = sessions[req.params.code];
-  if (!session || !session.location) return res.status(404).send('Nicht gefunden');
-  const url = session.location.image;
-  https.get(url, (gRes) => {
-    res.setHeader('Content-Type', gRes.headers['content-type'] || 'image/jpeg');
-    gRes.pipe(res);
-  }).on('error', () => res.status(502).send('Bildfehler'));
-});
+app.get('/api/maps-key', (_, res) => res.json({ key: MAPS_KEY }));
 
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
@@ -171,6 +150,7 @@ io.on('connection', (socket) => {
     const session = sessions[code];
     if (!session) return cb({ error: 'Session nicht gefunden' });
     if (session.phase !== 'lobby') return cb({ error: 'Spiel läuft bereits' });
+    if (session.players.some((p) => p.name === name)) return cb({ error: 'Name bereits vergeben' });
 
     session.players.push({ id: socket.id, name, score: 0 });
     socket.join(code);
@@ -188,15 +168,20 @@ io.on('connection', (socket) => {
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
 
+    if (session.round >= TOTAL_ROUNDS) {
+      session.round = 0;
+      session.players.forEach((p) => (p.score = 0));
+    }
+
     const base = await randomStreetViewLocation();
     const heading = await fetchAutoHeading(base.lat, base.lng);
 
     session.round = (session.round || 0) + 1;
-    session.location = { ...base, image: svUrl(base.lat, base.lng, heading) };
+    session.location = { ...base, heading };
     session.phase = 'game';
     session.pins = {};
 
-    io.to(code).emit('game-started', { image: `/api/image/${code}?r=${session.round}` });
+    io.to(code).emit('game-started', { panoId: session.location.pano_id, heading: session.location.heading });
     console.log('game started:', code, base.label);
   });
 
@@ -230,7 +215,9 @@ io.on('connection', (socket) => {
 
       io.to(code).emit('round-ended', {
         results,
-        location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label }
+        location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label },
+        round: session.round,
+        totalRounds: TOTAL_ROUNDS
       });
     }
   });

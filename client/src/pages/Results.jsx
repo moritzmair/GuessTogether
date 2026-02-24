@@ -2,11 +2,11 @@ import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import socket from '../socket.js';
 
-export default function Results({ results, session, onRestart }) {
+export default function Results({ results, session, onNextRound, onNewGame, onShowSummary }) {
   const mapRef = useRef(null);
   const leafletMap = useRef(null);
 
-  const { results: players, location } = results;
+  const { results: players, location, round, totalRounds } = results;
 
   // Ergebniskarte mit Pins und Zielpunkt
   useEffect(() => {
@@ -15,6 +15,8 @@ export default function Results({ results, session, onRestart }) {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap'
     }).addTo(leafletMap.current);
+
+    const bounds = L.latLngBounds([[location.lat, location.lng]]);
 
     // Zielpunkt (rot)
     const targetIcon = L.divIcon({
@@ -30,9 +32,14 @@ export default function Results({ results, session, onRestart }) {
     // Spieler-Pins mit Linien zum Ziel
     players.forEach((p) => {
       if (!p.pin) return;
+      bounds.extend([p.pin.lat, p.pin.lng]);
       const playerIcon = L.divIcon({
-        html: `<div style="background:#4ade80;width:12px;height:12px;border-radius:50%;border:2px solid #fff;" title="${p.name}"></div>`,
-        iconSize: [12, 12],
+        html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
+          <div style="background:#4ade80;width:12px;height:12px;border-radius:50%;border:2px solid #fff;"></div>
+          <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;white-space:nowrap;margin-top:2px">${p.name}</div>
+        </div>`,
+        iconSize: [80, 30],
+        iconAnchor: [40, 6],
         className: ''
       });
       L.marker([p.pin.lat, p.pin.lng], { icon: playerIcon })
@@ -44,6 +51,8 @@ export default function Results({ results, session, onRestart }) {
         { color: '#4ade80', dashArray: '6 4', weight: 2, opacity: 0.7 }
       ).addTo(leafletMap.current);
     });
+
+    leafletMap.current.fitBounds(bounds.pad(0.3));
 
     return () => {
       if (leafletMap.current) {
@@ -106,15 +115,24 @@ export default function Results({ results, session, onRestart }) {
           ))}
         </ul>
 
-        {session.isHost && (
-          <button onClick={onRestart} style={{ marginTop: 16 }}>
-            🔄 Zurück zur Lobby
+        <p style={{ textAlign: 'center', color: '#aaa', marginTop: 8, fontSize: '0.85rem' }}>
+          Runde {round} / {totalRounds}
+        </p>
+
+        {round < totalRounds && session.isHost && (
+          <button onClick={onNextRound} style={{ marginTop: 16 }}>
+            ▶ Nächste Runde
           </button>
         )}
-        {!session.isHost && (
+        {round < totalRounds && !session.isHost && (
           <p style={{ textAlign: 'center', color: '#aaa', marginTop: 16 }}>
             Warte auf Host…
           </p>
+        )}
+        {round >= totalRounds && (
+          <button onClick={onShowSummary} style={{ marginTop: 16 }}>
+            📊 Zusammenfassung anzeigen
+          </button>
         )}
       </div>
     </div>

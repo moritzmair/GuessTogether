@@ -10,19 +10,56 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
 });
 
-export default function Game({ session, imageUrl, onRoundEnd }) {
+export default function Game({ session, panoData }) {
   const mapRef = useRef(null);
+  const panoRef = useRef(null);
   const leafletMap = useRef(null);
   const markerRef = useRef(null);
 
-  const image = imageUrl || `/api/image/${session.code}`;
   const [pin, setPin] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [pinCount, setPinCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(session.players?.length || 0);
-  const [mapExpanded, setMapExpanded] = useState(false);
+  const [panoError, setPanoError] = useState(false);
 
   const isHost = session.isHost;
+
+  // Street View Panorama für Host initialisieren
+  useEffect(() => {
+    if (!isHost || !panoData || !panoRef.current) return;
+    let cancelled = false;
+    setPanoError(false);
+    (async () => {
+      if (!window.google?.maps?.StreetViewPanorama) {
+        const { key } = await fetch('/api/maps-key').then((r) => r.json());
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&callback=Function.prototype`;
+          s.async = true; s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+      if (cancelled) return;
+      const sv = new window.google.maps.StreetViewPanorama(panoRef.current, {
+        pano: panoData.panoId,
+        pov: { heading: panoData.heading, pitch: 0 },
+        zoom: 1,
+        disableDefaultUI: true,
+        clickToGo: false,
+        linksControl: false,
+        panControl: false,
+        zoomControl: false,
+        scrollwheel: false,
+        motionTracking: false,
+        motionTrackingControl: false,
+        showRoadLabels: false,
+      });
+      sv.addListener('status_changed', () => {
+        if (!cancelled && sv.getStatus() !== 'OK') setPanoError(true);
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [isHost, panoData]);
 
   // Karte nur für Spieler initialisieren
   useEffect(() => {
@@ -54,18 +91,10 @@ export default function Game({ session, imageUrl, onRoundEnd }) {
       setPinCount(pc);
       setTotalPlayers(tp);
     });
-    socket.on('round-ended', (data) => onRoundEnd(data));
     return () => {
       socket.off('pin-placed');
-      socket.off('round-ended');
     };
   }, []);
-
-  useEffect(() => {
-    if (!isHost && leafletMap.current) {
-      setTimeout(() => leafletMap.current.invalidateSize(), 200);
-    }
-  }, [mapExpanded, isHost]);
 
   function submitPin() {
     if (!pin) return;
@@ -73,18 +102,24 @@ export default function Game({ session, imageUrl, onRoundEnd }) {
     setSubmitted(true);
   }
 
-  // Host-Ansicht: nur Street View Bild
+  // Host-Ansicht: Street View Panorama (gesperrt)
   if (isHost) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: '#000' }}>
-        <img
-          src={image}
-          alt="Street View"
-          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
-        />
+      <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#000' }}>
+        <div ref={panoRef} style={{ width: '100%', height: '100%' }} />
+        {/* Overlay blockiert Maus/Touch → kein Panning */}
+        <div style={{ position: 'absolute', inset: 0 }} />
+        {panoError && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', fontSize: '1.1rem', background: '#111', zIndex: 5
+          }}>
+            ⚠️ Street View nicht verfügbar für diesen Standort
+          </div>
+        )}
         <div style={{
           position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)',
-          borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff'
+          borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 10
         }}>
           🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
         </div>
@@ -92,48 +127,21 @@ export default function Game({ session, imageUrl, onRoundEnd }) {
     );
   }
 
-  // Spieler-Ansicht: Bild + Karte + Pin
+  // Spieler-Ansicht: nur Karte
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-
-      <div style={{ flex: mapExpanded ? '0 0 30%' : '0 0 45%', position: 'relative', overflow: 'hidden' }}>
-        <img
-          src={image}
-          alt="Wo bin ich?"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
-        <div style={{
-          position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)',
-          borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff'
-        }}>
-          🌍 Wo bin ich?
-        </div>
-        {submitted && (
-          <div style={{
-            position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
-            background: 'rgba(74,222,128,0.9)', borderRadius: 6, padding: '4px 12px',
-            fontSize: '0.85rem', color: '#111', fontWeight: 'bold'
-          }}>
-            ✅ Pin gesetzt – warte auf andere ({pinCount}/{totalPlayers})
-          </div>
-        )}
-      </div>
-
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
-        <button
-          onClick={() => setMapExpanded((v) => !v)}
-          style={{
-            position: 'absolute', top: 8, right: 8, zIndex: 1000,
-            width: 'auto', padding: '6px 12px', fontSize: '0.75rem',
-            background: 'rgba(0,0,0,0.7)', color: '#fff', borderRadius: 6, margin: 0
-          }}
-        >
-          {mapExpanded ? '⬆ Kleiner' : '⬇ Größer'}
-        </button>
-
-        {!submitted && (
+        {submitted ? (
+          <div style={{
+            position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000,
+            background: 'rgba(74,222,128,0.9)', borderRadius: 6, padding: '8px 16px',
+            fontSize: '0.85rem', color: '#111', fontWeight: 'bold', whiteSpace: 'nowrap'
+          }}>
+            ✅ Pin gesetzt – warte auf andere ({pinCount}/{totalPlayers})
+          </div>
+        ) : (
           <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, width: '80%' }}>
             <button onClick={submitPin} disabled={!pin} style={{ margin: 0, opacity: pin ? 1 : 0.5 }}>
               📍 Pin bestätigen

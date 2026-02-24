@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import socket from '../socket.js';
 
-export default function Lobby({ session, onSessionUpdate, onGameStart }) {
+export default function Lobby({ session, onSessionUpdate }) {
   const [players, setPlayers] = useState(session.players || []);
 
   const joinUrl = `${window.location.origin}?join=${session.code}`;
@@ -13,13 +13,8 @@ export default function Lobby({ session, onSessionUpdate, onGameStart }) {
       onSessionUpdate({ ...session, players: updatedPlayers });
     });
 
-    socket.on('game-started', ({ image }) => onGameStart(image));
-    socket.on('host-changed', () => {});
-
     return () => {
       socket.off('players-updated');
-      socket.off('game-started');
-      socket.off('host-changed');
     };
   }, []);
 

@@ -1,8 +1,17 @@
 import React, { useState } from 'react';
 import socket from '../socket.js';
 
+const ADJECTIVES = ['crazy', 'slow', 'fast', 'wild', 'lazy', 'tiny', 'brave', 'lucky', 'silly', 'sneaky', 'grumpy', 'happy', 'dark', 'bold', 'swift'];
+const ANIMALS = ['rabbit', 'horse', 'fox', 'bear', 'wolf', 'eagle', 'shark', 'tiger', 'panda', 'koala', 'lion', 'hawk', 'deer', 'duck', 'owl'];
+
+function randomName() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+  return `${adj}-${animal}`;
+}
+
 export default function Home({ onJoined }) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => randomName());
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
