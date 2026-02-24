@@ -1,0 +1,13 @@
+{
+  "name": "guesstogether",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev": "npx concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "start": "npx concurrently \"npm start --prefix server\" \"npm run preview --prefix client\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
