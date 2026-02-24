@@ -7,7 +7,6 @@ const cors = require('cors');
 
 const MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 
-// Startup: API-Key prüfen via Metadata-Endpoint (kein Bild-Quota)
 function checkApiKey() {
   return new Promise((resolve, reject) => {
     if (!MAPS_KEY) {
@@ -44,21 +43,7 @@ const io = new Server(server, {
   cors: { origin: '*' }
 });
 
-// In-Memory Sessions
 const sessions = {};
-
-function svUrl(lat, lng, heading = 0, pitch = 0) {
-  return `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${lat},${lng}&heading=${heading}&pitch=${pitch}&key=${MAPS_KEY}`;
-}
-
-// Beispiel-Locations (lat, lng, streetViewUrl)
-const LOCATIONS = [
-  { lat: 48.8584,  lng: 2.2945,    label: 'Paris, Frankreich',  image: svUrl(48.8584,  2.2945,    151, -1) },
-  { lat: 40.6892,  lng: -74.0445,  label: 'New York, USA',      image: svUrl(40.6892,  -74.0445,  70,   0) },
-  { lat: 51.5007,  lng: -0.1246,   label: 'London, UK',         image: svUrl(51.5007,  -0.1246,   90,  10) },
-  { lat: 35.6762,  lng: 139.6503,  label: 'Tokyo, Japan',       image: svUrl(35.6762,  139.6503,  200,  0) },
-  { lat: -33.8688, lng: 151.2093,  label: 'Sydney, Australien', image: svUrl(-33.8688, 151.2093,  0,    0) }
-];
 
 // Haversine-Distanz in km
 function distanceKm(lat1, lng1, lat2, lng2) {
@@ -73,14 +58,83 @@ function distanceKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// 6-stelligen Code generieren
+// Kompassrichtung von (lat1,lng1) nach (lat2,lng2) in Grad
+function bearing(lat1, lng1, lat2, lng2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+  return (Math.atan2(y, x) * (180 / Math.PI) + 360) % 360;
+}
+
+// Street View Metadata abrufen
+function fetchMetadata(lat, lng) {
+  return new Promise((resolve) => {
+    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=50000&key=${MAPS_KEY}`;
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve({ status: 'ERROR' }); }
+      });
+    }).on('error', () => resolve({ status: 'ERROR' }));
+  });
+}
+
+// Fahrtrichtung ermitteln: benachbartes Panorama suchen und Bearing berechnen
+async function fetchAutoHeading(lat, lng) {
+  const meta1 = await fetchMetadata(lat, lng);
+  if (meta1.status !== 'OK') return 0;
+
+  const { lat: plat, lng: plng } = meta1.location;
+  const offsets = [[0.001, 0], [0, 0.001], [-0.001, 0], [0, -0.001]];
+
+  let bestHeading = null;
+  for (const [dlat, dlng] of offsets) {
+    const meta2 = await fetchMetadata(plat + dlat, plng + dlng);
+    if (meta2.status === 'OK' && meta2.pano_id !== meta1.pano_id) {
+      const h = Math.round(bearing(plat, plng, meta2.location.lat, meta2.location.lng));
+      if (bestHeading === null) bestHeading = h;
+    }
+  }
+  return bestHeading ?? 0;
+}
+
+function svUrl(lat, lng, heading) {
+  return `https://maps.googleapis.com/maps/api/streetview?size=2048x2048&location=${lat},${lng}&heading=${heading}&pitch=0&fov=120&source=outdoor&key=${MAPS_KEY}`;
+}
+
 function makeCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
+const REGIONS = [
+  { lat: [35, 70],  lng: [-10, 40]  },  // Europa
+  { lat: [25, 50],  lng: [-125, -65] }, // Nordamerika
+  { lat: [-35, 5],  lng: [-75, -35] },  // Südamerika
+  { lat: [-35, 37], lng: [10, 50]   },  // Afrika
+  { lat: [5, 55],   lng: [60, 145]  },  // Asien
+  { lat: [-45, -10],lng: [110, 155] },  // Australien
+];
+
+async function randomStreetViewLocation(maxTries = 100) {
+  for (let i = 0; i < maxTries; i++) {
+    const r = REGIONS[Math.floor(Math.random() * REGIONS.length)];
+    const lat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
+    const lng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
+    const meta = await fetchMetadata(lat, lng);
+    if (meta.status === 'OK') {
+      return { lat: meta.location.lat, lng: meta.location.lng, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
+    }
+  }
+  throw new Error('Kein Street View gefunden');
+}
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
-// Proxy-Endpoint: Bild wird serverseitig von Google geladen → kein API-Key im Browser
 app.get('/api/image/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || !session.location) return res.status(404).send('Nicht gefunden');
@@ -94,21 +148,21 @@ app.get('/api/image/:code', (req, res) => {
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
 
-  // Session erstellen (Host)
-  socket.on('create-session', ({ name }, cb) => {
+  // Session erstellen (Host) – kein Name nötig
+  socket.on('create-session', (_, cb) => {
     const code = makeCode();
     sessions[code] = {
       code,
       host: socket.id,
-      players: [{ id: socket.id, name, score: 0 }],
-      phase: 'lobby', // lobby | game | results
+      players: [],
+      phase: 'lobby',
       location: null,
-      pins: {}
+      pins: {},
+      round: 0
     };
     socket.join(code);
     socket.data.code = code;
-    socket.data.name = name;
-    cb({ code, players: sessions[code].players });
+    cb({ code, players: [] });
     console.log('session created:', code);
   });
 
@@ -123,44 +177,44 @@ io.on('connection', (socket) => {
     socket.data.code = code;
     socket.data.name = name;
 
-    // Alle in der Lobby informieren
     io.to(code).emit('players-updated', session.players);
     cb({ code, players: session.players, isHost: false });
     console.log(`${name} joined ${code}`);
   });
 
-  // Spiel starten (nur Host)
-  socket.on('start-game', () => {
+  // Spiel starten (nur Host) – Auto-Heading via Metadata API
+  socket.on('start-game', async () => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
 
-    const location = LOCATIONS[Math.floor(Math.random() * LOCATIONS.length)];
-    session.location = location;
+    const base = await randomStreetViewLocation();
+    const heading = await fetchAutoHeading(base.lat, base.lng);
+
+    session.round = (session.round || 0) + 1;
+    session.location = { ...base, image: svUrl(base.lat, base.lng, heading) };
     session.phase = 'game';
     session.pins = {};
 
-    // Proxy-URL statt direkter Google-URL → API-Key bleibt serverseitig
-    io.to(code).emit('game-started', { image: `/api/image/${code}` });
-    console.log('game started:', code, location.label);
+    io.to(code).emit('game-started', { image: `/api/image/${code}?r=${session.round}` });
+    console.log('game started:', code, base.label);
   });
 
-  // Spieler setzt Pin
+  // Spieler setzt Pin (Host nimmt nicht teil)
   socket.on('place-pin', ({ lat, lng }) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.phase !== 'game') return;
+    if (socket.id === session.host) return; // Host darf keinen Pin setzen
 
     session.pins[socket.id] = { lat, lng };
 
-    // Warten bis alle Pins gesetzt
     const totalPlayers = session.players.length;
     const pinCount = Object.keys(session.pins).length;
 
     io.to(code).emit('pin-placed', { playerId: socket.id, pinCount, totalPlayers });
 
     if (pinCount >= totalPlayers) {
-      // Ergebnisse berechnen
       const results = session.players.map((p) => {
         const pin = session.pins[p.id];
         const dist = pin
@@ -168,14 +222,7 @@ io.on('connection', (socket) => {
           : 99999;
         const points = Math.max(0, 5000 - dist * 2);
         p.score += points;
-        return {
-          id: p.id,
-          name: p.name,
-          dist,
-          points,
-          totalScore: p.score,
-          pin: pin || null
-        };
+        return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
       });
 
       results.sort((a, b) => b.points - a.points);
@@ -183,13 +230,20 @@ io.on('connection', (socket) => {
 
       io.to(code).emit('round-ended', {
         results,
-        location: {
-          lat: session.location.lat,
-          lng: session.location.lng,
-          label: session.location.label
-        }
+        location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label }
       });
     }
+  });
+
+  // Zurück zur Lobby (nur Host)
+  socket.on('back-to-lobby', () => {
+    const code = socket.data.code;
+    const session = sessions[code];
+    if (!session || session.host !== socket.id) return;
+    session.phase = 'lobby';
+    session.pins = {};
+    session.location = null;
+    io.to(code).emit('back-to-lobby');
   });
 
   // Disconnect
@@ -198,16 +252,19 @@ io.on('connection', (socket) => {
     const session = sessions[code];
     if (!session) return;
 
-    session.players = session.players.filter((p) => p.id !== socket.id);
+    if (session.host === socket.id) {
+      // Host disconnected → Session löschen
+      delete sessions[code];
+      io.to(code).emit('host-left');
+      console.log('host left, session deleted:', code);
+      return;
+    }
 
+    session.players = session.players.filter((p) => p.id !== socket.id);
     if (session.players.length === 0) {
       delete sessions[code];
-      console.log('session deleted:', code);
+      console.log('session deleted (leer):', code);
     } else {
-      if (session.host === socket.id) {
-        session.host = session.players[0].id;
-        io.to(code).emit('host-changed', session.host);
-      }
       io.to(code).emit('players-updated', session.players);
     }
     console.log('disconnected:', socket.id);

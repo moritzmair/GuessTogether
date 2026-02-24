@@ -1,17 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Home from './pages/Home.jsx';
 import Lobby from './pages/Lobby.jsx';
 import Game from './pages/Game.jsx';
 import Results from './pages/Results.jsx';
+import socket from './socket.js';
 
-// Globaler State wird als Props durchgereicht (kein Redux nötig für MVP)
 export default function App() {
-  const [page, setPage] = useState('home'); // home | lobby | game | results
+  const [page, setPage] = useState('home');
   const [session, setSession] = useState(null);
-  // session = { code, players, isHost, name }
-
   const [results, setResults] = useState(null);
-  // results = { results[], location }
+  const [gameImage, setGameImage] = useState(null);
+
+  useEffect(() => {
+    socket.on('back-to-lobby', () => setPage('lobby'));
+    socket.on('host-left', () => { setPage('home'); setSession(null); });
+    return () => {
+      socket.off('back-to-lobby');
+      socket.off('host-left');
+    };
+  }, []);
 
   if (page === 'home')
     return <Home onJoined={(s) => { setSession(s); setPage('lobby'); }} />;
@@ -21,7 +28,7 @@ export default function App() {
       <Lobby
         session={session}
         onSessionUpdate={(s) => setSession(s)}
-        onGameStart={() => setPage('game')}
+        onGameStart={(img) => { setGameImage(img); setPage('game'); }}
       />
     );
 
@@ -29,6 +36,7 @@ export default function App() {
     return (
       <Game
         session={session}
+        imageUrl={gameImage}
         onRoundEnd={(r) => { setResults(r); setPage('results'); }}
       />
     );
@@ -38,7 +46,7 @@ export default function App() {
       <Results
         results={results}
         session={session}
-        onRestart={() => setPage('lobby')}
+        onRestart={() => socket.emit('back-to-lobby')}
       />
     );
 

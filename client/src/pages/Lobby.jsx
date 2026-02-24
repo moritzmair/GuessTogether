@@ -13,9 +13,7 @@ export default function Lobby({ session, onSessionUpdate, onGameStart }) {
       onSessionUpdate({ ...session, players: updatedPlayers });
     });
 
-    socket.on('game-started', () => onGameStart());
-
-    // Host hat gewechselt (kein Page-Reload nötig)
+    socket.on('game-started', ({ image }) => onGameStart(image));
     socket.on('host-changed', () => {});
 
     return () => {
@@ -52,32 +50,38 @@ export default function Lobby({ session, onSessionUpdate, onGameStart }) {
         </p>
 
         <h2>Spieler ({players.length})</h2>
-        <ul style={{ listStyle: 'none', marginBottom: 20 }}>
-          {players.map((p) => (
-            <li
-              key={p.id}
-              style={{
-                padding: '8px 12px',
-                marginTop: 6,
-                background: '#2a2a2a',
-                borderRadius: 6,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8
-              }}
-            >
-              <span>{p.id === session.players?.[0]?.id ? '👑' : '👤'}</span>
-              <span>{p.name}</span>
-              {p.id === socket.id && (
-                <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#4ade80' }}>Du</span>
-              )}
-            </li>
-          ))}
-        </ul>
+        {players.length === 0 ? (
+          <p style={{ color: '#555', fontSize: '0.85rem', marginBottom: 20 }}>
+            Noch niemand beigetreten…
+          </p>
+        ) : (
+          <ul style={{ listStyle: 'none', marginBottom: 20 }}>
+            {players.map((p) => (
+              <li
+                key={p.id}
+                style={{
+                  padding: '8px 12px',
+                  marginTop: 6,
+                  background: '#2a2a2a',
+                  borderRadius: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8
+                }}
+              >
+                <span>👤</span>
+                <span>{p.name}</span>
+                {p.id === socket.id && (
+                  <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#4ade80' }}>Du</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
 
         {session.isHost ? (
           <button onClick={startGame} disabled={players.length < 1}>
-            Spiel starten
+            Spiel starten ({players.length} Spieler)
           </button>
         ) : (
           <p style={{ textAlign: 'center', color: '#aaa' }}>Warte auf Host…</p>
