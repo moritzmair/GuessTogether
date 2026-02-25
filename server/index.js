@@ -92,37 +92,65 @@ function makeCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-const REGIONS = [
-  { lat: [35, 70],  lng: [-10, 40]  },  // Europa
-  { lat: [25, 50],  lng: [-125, -65] }, // Nordamerika
-  { lat: [-35, 5],  lng: [-75, -35] },  // Südamerika
-  { lat: [-35, 37], lng: [10, 50]   },  // Afrika
-  { lat: [5, 55],   lng: [60, 145]  },  // Asien
-  { lat: [-45, -10],lng: [110, 155] },  // Australien
+const REGIONS_WELTWEIT = [
+  { lat: [35, 70],  lng: [-10, 40]  },
+  { lat: [25, 50],  lng: [-125, -65] },
+  { lat: [-35, 5],  lng: [-75, -35] },
+  { lat: [-35, 37], lng: [10, 50]   },
+  { lat: [5, 55],   lng: [60, 145]  },
+  { lat: [-45, -10],lng: [110, 155] },
 ];
 
-async function randomStreetViewLocation(maxTries = 100) {
+const REGIONS_EUROPA = [
+  { lat: [36, 44], lng: [-9, 3]   },  // Iberische Halbinsel
+  { lat: [42, 51], lng: [-5, 8]   },  // Frankreich, Benelux
+  { lat: [50, 59], lng: [-8, 2]   },  // Britische Inseln
+  { lat: [46, 55], lng: [6, 19]   },  // D, A, CH, CZ, SK
+  { lat: [55, 71], lng: [4, 28]   },  // Skandinavien
+  { lat: [37, 47], lng: [7, 18]   },  // Italien
+  { lat: [54, 70], lng: [20, 30]  },  // Polen, Baltikum, Finnland
+  { lat: [38, 47], lng: [13, 28]  },  // Balkan
+  { lat: [44, 52], lng: [22, 40]  },  // Ukraine, Rumänien, Ungarn
+  { lat: [35, 42], lng: [20, 28]  },  // Griechenland
+];
+
+const CITIES = [
+  [40.7128,-74.006],[51.5074,-0.1278],[48.8566,2.3522],[52.52,13.405],[41.9028,12.4964],
+  [40.4168,-3.7038],[38.7223,-9.1393],[50.8503,4.3517],[47.3769,8.5417],[59.9139,10.7522],
+  [55.6761,12.5683],[53.3498,-6.2603],[48.2082,16.3738],[50.0755,14.4378],[54.6872,25.2797],
+  [35.6762,139.6503],[22.3193,114.1694],[1.3521,103.8198],[37.5665,126.978],[31.2304,121.4737],
+  [39.9042,116.4074],[28.6139,77.209],[19.076,72.8777],[13.7563,100.5018],[3.139,101.6869],
+  [-33.8688,151.2093],[53.4808,-2.2426],[-23.5505,-46.6333],[-34.6037,-58.3816],[19.4326,-99.1332],
+  [30.0444,31.2357],[6.5244,3.3792],[-1.2921,36.8219],[33.5731,-7.5898],[25.2048,55.2708],
+  [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
+];
+
+async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
+  if (mode === 'grossstaedte') {
+    for (let i = 0; i < maxTries; i++) {
+      const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
+      const jLat = seedLat + (Math.random() - 0.5) * 0.05;
+      const jLng = seedLng + (Math.random() - 0.5) * 0.05;
+      const meta = await fetchNearestPanorama(jLat, jLng, 2000);
+      if (meta.status !== 'OK' || !meta.pano_id) continue;
+      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+      return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
+    }
+    throw new Error('Kein Street View gefunden');
+  }
+
+  const regions = mode === 'europa' ? REGIONS_EUROPA : REGIONS_WELTWEIT;
   for (let i = 0; i < maxTries; i++) {
-    // Schritt 1: Zufällige Position innerhalb einer Region wählen
-    const r = REGIONS[Math.floor(Math.random() * REGIONS.length)];
+    const r = regions[Math.floor(Math.random() * regions.length)];
     const seedLat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
     const seedLng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
-
-    // Schritt 2: Prüfen ob im Radius von 50 km ein Panorama verfügbar ist
     const meta = await fetchNearestPanorama(seedLat, seedLng, 10000);
     if (meta.status !== 'OK' || !meta.pano_id) {
-      console.log(`Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
+      console.log(`[${mode}] Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
       continue;
     }
-
-    // Schritt 3: Panorama gefunden – Daten zurückgeben
-    console.log(`Panorama gefunden bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
-    return {
-      lat: meta.location.lat,
-      lng: meta.location.lng,
-      pano_id: meta.pano_id,
-      label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}`
-    };
+    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+    return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
   }
   throw new Error('Kein Street View gefunden');
 }
@@ -171,7 +199,7 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async () => {
+  socket.on('start-game', async ({ mode } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
@@ -182,7 +210,10 @@ io.on('connection', (socket) => {
       session.leftThisRound = [];
     }
 
-    const base = await randomStreetViewLocation();
+    const gameMode = mode || session.mode || 'weltweit';
+    session.mode = gameMode;
+
+    const base = await randomStreetViewLocation(gameMode);
     const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
     session.round = (session.round || 0) + 1;
@@ -212,9 +243,9 @@ io.on('connection', (socket) => {
       const results = session.players.map((p) => {
         const pin = session.pins[p.id];
         const dist = pin
-          ? Math.round(distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng))
+          ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
           : 99999;
-        const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 50))) : 0;
+        const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
         p.score += points;
         return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
       });
@@ -291,9 +322,9 @@ io.on('connection', (socket) => {
         const results = session.players.map((p) => {
           const pin = session.pins[p.id];
           const dist = pin
-            ? Math.round(distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng))
+            ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
             : 99999;
-          const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 50))) : 0;
+          const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
           p.score += points;
           return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
         });
