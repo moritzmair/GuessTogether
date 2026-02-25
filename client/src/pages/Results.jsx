@@ -83,23 +83,27 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
             <li
               key={p.id}
               style={{
-                background: i === 0 ? '#1a3a1a' : '#1a1a1a',
-                border: i === 0 ? '1px solid #4ade80' : '1px solid #333',
+                background: p.left ? '#111' : (i === 0 ? '#1a3a1a' : '#1a1a1a'),
+                border: p.left ? '1px solid #333' : (i === 0 ? '1px solid #4ade80' : '1px solid #333'),
                 borderRadius: 8,
                 padding: '12px 16px',
                 marginBottom: 8,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 12
+                gap: 12,
+                opacity: p.left ? 0.5 : 1
               }}
             >
               <span style={{ fontSize: '1.4rem' }}>
-                {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`}
+                {p.left ? '🚪' : (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`)}
               </span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 'bold' }}>
                   {p.name}
-                  {p.id === socket.id && (
+                  {p.left && (
+                    <span style={{ marginLeft: 8, fontSize: '0.75rem', color: '#888' }}>verlassen</span>
+                  )}
+                  {!p.left && p.id === socket.id && (
                     <span style={{ marginLeft: 8, fontSize: '0.75rem', color: '#4ade80' }}>Du</span>
                   )}
                 </div>
@@ -108,7 +112,7 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 'bold', color: '#4ade80' }}>+{p.points} Pkt</div>
+                <div style={{ fontWeight: 'bold', color: p.left ? '#555' : '#4ade80' }}>+{p.points} Pkt</div>
                 <div style={{ fontSize: '0.75rem', color: '#aaa' }}>Gesamt: {p.totalScore}</div>
               </div>
             </li>

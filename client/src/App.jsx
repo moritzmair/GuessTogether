@@ -14,13 +14,19 @@ export default function App() {
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
-    socket.on('game-started', ({ panoId, heading }) => { setGamePano({ panoId, heading }); setPage('game'); });
+    socket.on('game-started', ({ panoId, heading, players }) => {
+      setGamePano({ panoId, heading });
+      if (players) setSession((s) => ({ ...s, players }));
+      setPage('game');
+    });
     socket.on('round-ended', (r) => { setResults(r); setHistory((prev) => [...prev, r]); setPage('results'); });
+    socket.on('results-updated', (r) => { setResults(r); setHistory((prev) => prev.map((h) => h.round === r.round ? r : h)); });
     socket.on('back-to-lobby', () => { setHistory([]); setPage('lobby'); });
     socket.on('host-left', () => { setPage('home'); setSession(null); });
     return () => {
       socket.off('game-started');
       socket.off('round-ended');
+      socket.off('results-updated');
       socket.off('back-to-lobby');
       socket.off('host-left');
     };

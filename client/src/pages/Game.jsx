@@ -22,6 +22,9 @@ export default function Game({ session, panoData }) {
   const [pinCount, setPinCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(session.players?.length || 0);
   const [panoError, setPanoError] = useState(false);
+  const [leftNotice, setLeftNotice] = useState(null);
+  const [players, setPlayers] = useState(session.players || []);
+  const [pinnedIds, setPinnedIds] = useState(new Set());
 
   const isHost = session.isHost;
 
@@ -97,12 +100,20 @@ export default function Game({ session, panoData }) {
   }, [isHost]);
 
   useEffect(() => {
-    socket.on('pin-placed', ({ pinCount: pc, totalPlayers: tp }) => {
+    socket.on('pin-placed', ({ playerId, pinCount: pc, totalPlayers: tp }) => {
       setPinCount(pc);
       setTotalPlayers(tp);
+      if (playerId) setPinnedIds((prev) => new Set([...prev, playerId]));
+    });
+    socket.on('player-left', ({ name, players: updated }) => {
+      setTotalPlayers(updated.length);
+      setPlayers(updated);
+      setLeftNotice(`${name} hat das Spiel verlassen`);
+      setTimeout(() => setLeftNotice(null), 3000);
     });
     return () => {
       socket.off('pin-placed');
+      socket.off('player-left');
     };
   }, []);
 
@@ -114,10 +125,10 @@ export default function Game({ session, panoData }) {
 
   // Host-Ansicht: Street View Panorama (gesperrt)
   if (isHost) {
+    const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#000' }}>
         <div ref={panoRef} style={{ width: '100%', height: '100%' }} />
-        {/* Overlay blockiert Maus/Touch → kein Panning */}
         <div style={{ position: 'absolute', inset: 0 }} />
         {panoError && (
           <div style={{
@@ -133,6 +144,28 @@ export default function Game({ session, panoData }) {
         }}>
           🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
         </div>
+        <div style={{
+          position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.75)',
+          borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', color: '#fff', zIndex: 10,
+          minWidth: 160
+        }}>
+          {sortedPlayers.map((p, i) => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: i < sortedPlayers.length - 1 ? 4 : 0 }}>
+              <span style={{ opacity: 0.6, width: 16 }}>{i + 1}.</span>
+              <span style={{ flex: 1 }}>{p.name}</span>
+              <span style={{ opacity: 0.7, marginRight: 4 }}>{p.score}</span>
+              <span>{pinnedIds.has(p.id) ? '✅' : '⏳'}</span>
+            </div>
+          ))}
+        </div>
+        {leftNotice && (
+          <div style={{
+            position: 'absolute', bottom: 8, right: 8, background: 'rgba(220,50,50,0.85)',
+            borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 10
+          }}>
+            👋 {leftNotice}
+          </div>
+        )}
       </div>
     );
   }
@@ -142,6 +175,15 @@ export default function Game({ session, panoData }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+
+        {leftNotice && (
+          <div style={{
+            position: 'absolute', top: 8, right: 8, background: 'rgba(220,50,50,0.85)',
+            borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 1001
+          }}>
+            👋 {leftNotice}
+          </div>
+        )}
 
         {submitted ? (
           <div style={{
