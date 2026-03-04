@@ -6,6 +6,7 @@ const MODES = [
   { id: 'weltweit', label: '🌍 Weltweit' },
   { id: 'europa', label: '🇪🇺 Europa' },
   { id: 'grossstaedte', label: '🏙️ Großstädte' },
+  { id: 'darmstadt', label: '🦔 Darmstadt' },
 ];
 
 export default function Lobby({ session, onSessionUpdate }) {
