@@ -33,8 +33,8 @@ const io = new Server(server, {
 
 const sessions = {};
 
-// Grace-Period bevor ein Spieler wirklich entfernt wird (Tab-Wechsel, Bildschirm sperren)
-const RECONNECT_GRACE_MS = 20_000;
+// Grace-Period bevor ein Spieler wirklich entfernt wird (Tab-Wechsel, Bildschirm sperren, Tab schließen)
+const RECONNECT_GRACE_MS = 120_000; // 2 Minuten – genug Zeit um Tab wieder zu öffnen
 const pendingDisconnects = {}; // key: `${code}:${name}` oder `host:${code}`
 
 // Haversine-Distanz in km

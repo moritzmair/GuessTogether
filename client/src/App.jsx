@@ -11,7 +11,7 @@ const SESSION_KEY = 'gg_session';
 function saveSession(session) {
   if (!session) return;
   try {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
       code: session.code,
       name: session.name,
       isHost: session.isHost,
@@ -21,7 +21,7 @@ function saveSession(session) {
 }
 
 function clearSession() {
-  try { sessionStorage.removeItem(SESSION_KEY); } catch (_) {}
+  try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
 }
 
 export default function App() {
@@ -53,7 +53,7 @@ export default function App() {
       }
 
       let saved;
-      try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) || ''); }
+      try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) || ''); }
       catch (_) { return; }
       if (!saved?.code) return;
 
