@@ -10,7 +10,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
 });
 
-export default function Game({ session, panoData }) {
+export default function Game({ session, panoData, alreadyPinned = false }) {
   const mapRef = useRef(null);
   const panoRef = useRef(null);
   const svInstanceRef = useRef(null);
@@ -18,7 +18,7 @@ export default function Game({ session, panoData }) {
   const markerRef = useRef(null);
 
   const [pin, setPin] = useState(null);
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState(alreadyPinned);
   const [pinCount, setPinCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(session.players?.length || 0);
   const [panoError, setPanoError] = useState(false);
@@ -172,8 +172,8 @@ export default function Game({ session, panoData }) {
 
   // Spieler-Ansicht: nur Karte
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', overflow: 'hidden' }}>
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden', minHeight: 0 }}>
         <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
         {leftNotice && (
@@ -184,21 +184,25 @@ export default function Game({ session, panoData }) {
             👋 {leftNotice}
           </div>
         )}
+      </div>
 
+      <div style={{
+        padding: '10px 16px',
+        paddingBottom: 'max(10px, env(safe-area-inset-bottom, 10px))',
+        background: 'rgba(18,18,30,0.95)',
+        flexShrink: 0,
+      }}>
         {submitted ? (
           <div style={{
-            position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000,
-            background: 'rgba(74,222,128,0.9)', borderRadius: 6, padding: '8px 16px',
-            fontSize: '0.85rem', color: '#111', fontWeight: 'bold', whiteSpace: 'nowrap'
+            background: 'rgba(74,222,128,0.9)', borderRadius: 6, padding: '10px 16px',
+            fontSize: '0.85rem', color: '#111', fontWeight: 'bold', textAlign: 'center'
           }}>
             ✅ Pin gesetzt – warte auf andere ({pinCount}/{totalPlayers})
           </div>
         ) : (
-          <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, width: '80%' }}>
-            <button onClick={submitPin} disabled={!pin} style={{ margin: 0, opacity: pin ? 1 : 0.5 }}>
-              📍 Pin bestätigen
-            </button>
-          </div>
+          <button onClick={submitPin} disabled={!pin} style={{ margin: 0, width: '100%', opacity: pin ? 1 : 0.5 }}>
+            📍 Pin bestätigen
+          </button>
         )}
       </div>
     </div>

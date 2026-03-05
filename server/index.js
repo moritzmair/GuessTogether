@@ -33,6 +33,10 @@ const io = new Server(server, {
 
 const sessions = {};
 
+// Grace-Period bevor ein Spieler wirklich entfernt wird (Tab-Wechsel, Bildschirm sperren)
+const RECONNECT_GRACE_MS = 20_000;
+const pendingDisconnects = {}; // key: `${code}:${name}` oder `host:${code}`
+
 // Haversine-Distanz in km
 function distanceKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -159,6 +163,45 @@ async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
   throw new Error('Kein Street View gefunden');
 }
 
+// Runde abschließen – nur aktive (nicht temporarilyGone) Spieler erhalten Punkte
+function finishRound(session, code) {
+  if (session.phase !== 'game') return;
+
+  const activePlayers = session.players.filter((p) => !p.temporarilyGone);
+
+  const results = activePlayers.map((p) => {
+    const pin = session.pins[p.id];
+    const dist = pin
+      ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
+      : 99999;
+    const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
+    p.score += points;
+    return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
+  });
+
+  const leftResults = (session.leftThisRound || []).map((p) => ({
+    id: p.id, name: p.name, dist: 99999, points: 0, totalScore: p.score, pin: null, left: true
+  }));
+
+  results.sort((a, b) => b.points - a.points || a.dist - b.dist);
+  session.phase = 'results';
+
+  const roundData = {
+    results: [...results, ...leftResults],
+    location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label },
+    round: session.round,
+    totalRounds: TOTAL_ROUNDS
+  };
+  session.currentRoundData = roundData;
+
+  io.to(code).emit('round-ended', roundData);
+}
+
+// Aktive Spieler (nicht temporarilyGone) für Clients
+function activePlayers(session) {
+  return session.players.filter((p) => !p.temporarilyGone);
+}
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 app.get('/api/maps-key', (_, res) => res.json({ key: MAPS_KEY }));
@@ -169,9 +212,11 @@ io.on('connection', (socket) => {
   // Session erstellen (Host) – kein Name nötig
   socket.on('create-session', (_, cb) => {
     const code = makeCode();
+    const hostSecret = Math.random().toString(36).substring(2, 18);
     sessions[code] = {
       code,
       host: socket.id,
+      hostSecret,
       players: [],
       leftThisRound: [],
       phase: 'lobby',
@@ -181,7 +226,7 @@ io.on('connection', (socket) => {
     };
     socket.join(code);
     socket.data.code = code;
-    cb({ code, players: [] });
+    cb({ code, players: [], hostSecret });
     console.log('session created:', code);
   });
 
@@ -197,9 +242,92 @@ io.on('connection', (socket) => {
     socket.data.code = code;
     socket.data.name = name;
 
-    io.to(code).emit('players-updated', session.players);
-    cb({ code, players: session.players, isHost: false });
+    io.to(code).emit('players-updated', activePlayers(session));
+    cb({ code, players: activePlayers(session), isHost: false });
     console.log(`${name} joined ${code}`);
+  });
+
+  // Wiederbeitreten nach Verbindungsunterbrechung
+  socket.on('rejoin-session', ({ code, name, isHost, hostSecret }, cb) => {
+    const session = sessions[code];
+    if (!session) return cb({ error: 'Session nicht mehr vorhanden' });
+
+    if (isHost) {
+      if (session.hostSecret !== hostSecret) return cb({ error: 'Ungültige Host-Credentials' });
+
+      // Laufenden Host-Disconnect-Timer abbrechen
+      const key = `host:${code}`;
+      if (pendingDisconnects[key]) {
+        clearTimeout(pendingDisconnects[key].timer);
+        delete pendingDisconnects[key];
+      }
+
+      session.host = socket.id;
+      socket.join(code);
+      socket.data.code = code;
+
+      const resp = { code, players: activePlayers(session), phase: session.phase };
+      if (session.phase === 'game' && session.location) {
+        resp.panoId = session.location.pano_id;
+        resp.heading = session.location.heading;
+      }
+      if (session.phase === 'results' && session.currentRoundData) {
+        resp.roundData = session.currentRoundData;
+      }
+      console.log('host rejoined:', code);
+      return cb(resp);
+    }
+
+    // Spieler-Rejoin: Timer stoppen oder Spieler aus leftThisRound wiederholen
+    const key = `${code}:${name}`;
+    const pending = pendingDisconnects[key];
+
+    if (pending) {
+      clearTimeout(pending.timer);
+      delete pendingDisconnects[key];
+    }
+
+    let player = session.players.find((p) => p.name === name);
+
+    if (player) {
+      // Spieler ist noch drin (temporarilyGone), Socket aktualisieren
+      const oldId = player.id;
+      if (session.pins[oldId]) {
+        session.pins[socket.id] = session.pins[oldId];
+        delete session.pins[oldId];
+      }
+      player.id = socket.id;
+      player.temporarilyGone = false;
+    } else if (pending?.player) {
+      // Grace-Period abgelaufen aber pending-Daten noch da – wiederherstellen
+      const restored = { ...pending.player, id: socket.id, temporarilyGone: false };
+      session.players.push(restored);
+      // Aus leftThisRound entfernen falls reingeschoben
+      session.leftThisRound = (session.leftThisRound || []).filter((p) => p.name !== name);
+      player = restored;
+    } else {
+      return cb({ error: 'Reconnect-Fenster abgelaufen. Bitte neu beitreten.' });
+    }
+
+    socket.join(code);
+    socket.data.code = code;
+    socket.data.name = name;
+
+    const resp = {
+      code, players: activePlayers(session), phase: session.phase, isHost: false, name
+    };
+    if (session.phase === 'game' && session.location) {
+      resp.panoId = session.location.pano_id;
+      resp.heading = session.location.heading;
+      resp.alreadyPinned = !!session.pins[socket.id];
+    }
+    if (session.phase === 'results' && session.currentRoundData) {
+      resp.roundData = session.currentRoundData;
+    }
+
+    io.to(code).emit('players-updated', activePlayers(session));
+    cb(resp);
+    console.log('player rejoined:', name, code);
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
@@ -224,8 +352,14 @@ io.on('connection', (socket) => {
     session.location = { ...base, heading };
     session.phase = 'game';
     session.pins = {};
+    // temporarilyGone-Flag zurücksetzen
+    session.players.forEach((p) => { p.temporarilyGone = false; });
 
-    io.to(code).emit('game-started', { panoId: session.location.pano_id, heading: session.location.heading, players: session.players });
+    io.to(code).emit('game-started', {
+      panoId: session.location.pano_id,
+      heading: session.location.heading,
+      players: activePlayers(session)
+    });
     console.log('game started:', code, base.label);
   });
 
@@ -234,42 +368,19 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.phase !== 'game') return;
-    if (socket.id === session.host) return; // Host darf keinen Pin setzen
+    if (socket.id === session.host) return;
 
     session.pins[socket.id] = { lat, lng };
 
-    const totalPlayers = session.players.length;
-    const pinCount = Object.keys(session.pins).length;
+    // Nur aktive Spieler für die Zählung
+    const active = session.players.filter((p) => !p.temporarilyGone);
+    const totalPlayers = active.length;
+    const pinCount = active.filter((p) => session.pins[p.id]).length;
 
     io.to(code).emit('pin-placed', { playerId: socket.id, pinCount, totalPlayers });
 
     if (pinCount >= totalPlayers) {
-      const results = session.players.map((p) => {
-        const pin = session.pins[p.id];
-        const dist = pin
-          ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
-          : 99999;
-        const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
-        p.score += points;
-        return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
-      });
-
-      const leftResults = session.leftThisRound.map((p) => ({
-        id: p.id, name: p.name, dist: 99999, points: 0, totalScore: p.score, pin: null, left: true
-      }));
-
-      results.sort((a, b) => b.points - a.points || a.dist - b.dist);
-      session.phase = 'results';
-
-      const roundData = {
-        results: [...results, ...leftResults],
-        location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label },
-        round: session.round,
-        totalRounds: TOTAL_ROUNDS
-      };
-      session.currentRoundData = roundData;
-
-      io.to(code).emit('round-ended', roundData);
+      finishRound(session, code);
     }
   });
 
@@ -281,6 +392,7 @@ io.on('connection', (socket) => {
     session.phase = 'lobby';
     session.pins = {};
     session.location = null;
+    session.leftThisRound = [];
     io.to(code).emit('back-to-lobby');
   });
 
@@ -290,79 +402,81 @@ io.on('connection', (socket) => {
     const session = sessions[code];
     if (!session) return;
 
+    // Host-Disconnect mit Grace-Period
     if (session.host === socket.id) {
-      delete sessions[code];
-      io.to(code).emit('host-left');
-      console.log('host left, session deleted:', code);
+      const key = `host:${code}`;
+      clearTimeout(pendingDisconnects[key]?.timer);
+      const timer = setTimeout(() => {
+        delete pendingDisconnects[key];
+        if (!sessions[code]) return;
+        delete sessions[code];
+        io.to(code).emit('host-left');
+        console.log('host left (grace expired):', code);
+      }, RECONNECT_GRACE_MS);
+      pendingDisconnects[key] = { timer, code };
+      console.log('host disconnected (grace period):', code);
       return;
     }
 
     const leavingPlayer = session.players.find((p) => p.id === socket.id);
-    session.players = session.players.filter((p) => p.id !== socket.id);
+    if (!leavingPlayer) return;
 
-    // Bei laufender Runde: für Ergebnisanzeige merken
-    if ((session.phase === 'game' || session.phase === 'results') && leavingPlayer) {
-      if (!session.leftThisRound) session.leftThisRound = [];
-      session.leftThisRound.push(leavingPlayer);
-    }
+    const key = `${code}:${leavingPlayer.name}`;
+    clearTimeout(pendingDisconnects[key]?.timer);
 
-    if (session.players.length === 0) {
-      delete sessions[code];
-      console.log('session deleted (leer):', code);
-      return;
-    }
+    // Spieler als temporär weg markieren – nicht sofort entfernen
+    leavingPlayer.temporarilyGone = true;
 
-    io.to(code).emit('player-left', {
-      name: leavingPlayer?.name || socket.id,
-      players: session.players
-    });
-
-    // Während Spielphase: prüfen ob alle verbliebenen Spieler schon gepinnt haben
+    // Runden-Ende prüfen: vielleicht haben alle verbleibenden aktiven Spieler schon gepinnt
     if (session.phase === 'game') {
-      const pinCount = Object.keys(session.pins).length;
-      const activePlayers = session.players.length;
-
-      if (activePlayers > 0 && pinCount >= activePlayers) {
-        const results = session.players.map((p) => {
-          const pin = session.pins[p.id];
-          const dist = pin
-            ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
-            : 99999;
-          const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
-          p.score += points;
-          return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
-        });
-
-        const leftResults = (session.leftThisRound || []).map((p) => ({
-          id: p.id, name: p.name, dist: 99999, points: 0, totalScore: p.score, pin: null, left: true
-        }));
-
-        results.sort((a, b) => b.points - a.points || a.dist - b.dist);
-        session.phase = 'results';
-
-        const roundData = {
-          results: [...results, ...leftResults],
-          location: { lat: session.location.lat, lng: session.location.lng, label: session.location.label },
-          round: session.round,
-          totalRounds: TOTAL_ROUNDS
-        };
-        session.currentRoundData = roundData;
-        io.to(code).emit('round-ended', roundData);
+      const active = session.players.filter((p) => !p.temporarilyGone);
+      const pinCount = active.filter((p) => session.pins[p.id]).length;
+      if (active.length > 0 && pinCount >= active.length) {
+        finishRound(session, code);
       }
     }
 
-    // Während Results-Phase: currentRoundData aktualisieren und neu emittieren
-    if (session.phase === 'results' && session.currentRoundData && leavingPlayer) {
-      session.currentRoundData = {
-        ...session.currentRoundData,
-        results: session.currentRoundData.results.map((p) =>
-          p.id === leavingPlayer.id ? { ...p, left: true } : p
-        )
-      };
-      io.to(code).emit('results-updated', session.currentRoundData);
-    }
+    // Grace-Period starten – danach Spieler wirklich entfernen
+    const timer = setTimeout(() => {
+      delete pendingDisconnects[key];
+      const sess = sessions[code];
+      if (!sess) return;
 
-    console.log('disconnected:', socket.id);
+      sess.players = sess.players.filter((p) => p.id !== leavingPlayer.id);
+
+      if ((sess.phase === 'game' || sess.phase === 'results') && leavingPlayer) {
+        if (!sess.leftThisRound) sess.leftThisRound = [];
+        if (!sess.leftThisRound.some((p) => p.id === leavingPlayer.id)) {
+          sess.leftThisRound.push(leavingPlayer);
+        }
+      }
+
+      if (sess.players.length === 0) {
+        delete sessions[code];
+        console.log('session deleted (leer):', code);
+        return;
+      }
+
+      io.to(code).emit('player-left', {
+        name: leavingPlayer.name,
+        players: activePlayers(sess)
+      });
+
+      if (sess.phase === 'results' && sess.currentRoundData && leavingPlayer) {
+        sess.currentRoundData = {
+          ...sess.currentRoundData,
+          results: sess.currentRoundData.results.map((p) =>
+            p.id === leavingPlayer.id ? { ...p, left: true } : p
+          )
+        };
+        io.to(code).emit('results-updated', sess.currentRoundData);
+      }
+
+      console.log('player left (grace expired):', leavingPlayer.name);
+    }, RECONNECT_GRACE_MS);
+
+    pendingDisconnects[key] = { timer, code, player: leavingPlayer };
+    console.log('player disconnected (grace period):', leavingPlayer.name);
   });
 });
 

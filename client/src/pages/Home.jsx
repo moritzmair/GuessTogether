@@ -52,13 +52,23 @@ export default function Home({ onJoined }) {
           </div>
 
           <label>Dein Name</label>
-          <input
-            value={name}
-            onChange={(e) => { setName(e.target.value); setError(''); }}
-            placeholder="Spielername"
-            maxLength={20}
-            style={{ width: '100%' }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={name}
+              onChange={(e) => { setName(e.target.value); setError(''); }}
+              placeholder="Spielername"
+              maxLength={20}
+              style={{ flex: 1, margin: 0 }}
+            />
+            <button
+              type="button"
+              onClick={() => setName(randomName())}
+              title="Neuen Zufallsnamen generieren"
+              style={{ margin: 0, padding: '10px 12px', flexShrink: 0, background: '#2a2a3e', fontSize: '1.1rem' }}
+            >
+              🎲
+            </button>
+          </div>
 
           <button
             onClick={joinSession}
