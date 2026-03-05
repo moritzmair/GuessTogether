@@ -64,7 +64,7 @@ export default function Home({ onJoined }) {
               type="button"
               onClick={() => setName(randomName())}
               title="Neuen Zufallsnamen generieren"
-              style={{ margin: 0, padding: '10px 12px', flexShrink: 0, background: '#2a2a3e', fontSize: '1.1rem' }}
+              style={{ margin: 0, padding: '5px 8px', flexShrink: 0, background: '#2a2a3e', fontSize: '0.9rem', lineHeight: 1 }}
             >
               🎲
             </button>

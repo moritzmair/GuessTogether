@@ -122,6 +122,10 @@ const REGIONS_DARMSTADT = [
   { lat: [49.82, 49.93], lng: [8.57, 8.72] },
 ];
 
+const REGIONS_WIESBADEN = [
+  { lat: [50.02, 50.12], lng: [8.18, 8.32] },
+];
+
 const CITIES = [
   [40.7128,-74.006],[51.5074,-0.1278],[48.8566,2.3522],[52.52,13.405],[41.9028,12.4964],
   [40.4168,-3.7038],[38.7223,-9.1393],[50.8503,4.3517],[47.3769,8.5417],[59.9139,10.7522],
@@ -147,7 +151,10 @@ async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
     throw new Error('Kein Street View gefunden');
   }
 
-  const regions = mode === 'europa' ? REGIONS_EUROPA : mode === 'darmstadt' ? REGIONS_DARMSTADT : REGIONS_WELTWEIT;
+  const regions = mode === 'europa' ? REGIONS_EUROPA
+    : mode === 'darmstadt' ? REGIONS_DARMSTADT
+    : mode === 'wiesbaden' ? REGIONS_WIESBADEN
+    : REGIONS_WELTWEIT;
   for (let i = 0; i < maxTries; i++) {
     const r = regions[Math.floor(Math.random() * regions.length)];
     const seedLat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
