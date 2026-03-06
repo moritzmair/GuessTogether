@@ -126,6 +126,14 @@ const REGIONS_WIESBADEN = [
   { lat: [50.02, 50.12], lng: [8.18, 8.32] },
 ];
 
+function regionsToBounds(regions) {
+  const minLat = Math.min(...regions.map((r) => r.lat[0]));
+  const maxLat = Math.max(...regions.map((r) => r.lat[1]));
+  const minLng = Math.min(...regions.map((r) => r.lng[0]));
+  const maxLng = Math.max(...regions.map((r) => r.lng[1]));
+  return [[minLat, minLng], [maxLat, maxLng]];
+}
+
 const CITIES = [
   [40.7128,-74.006],[51.5074,-0.1278],[48.8566,2.3522],[52.52,13.405],[41.9028,12.4964],
   [40.4168,-3.7038],[38.7223,-9.1393],[50.8503,4.3517],[47.3769,8.5417],[59.9139,10.7522],
@@ -224,6 +232,19 @@ async function doStartGame(session, code, mode, customBounds) {
   const base = await randomStreetViewLocation(gameMode, session.customBounds || null);
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
+  const cb = session.customBounds;
+  let mapBounds = null;
+  if (gameMode === 'custom' && cb) {
+    mapBounds = [[cb.lat[0], cb.lng[0]], [cb.lat[1], cb.lng[1]]];
+  } else {
+    const modeRegions = gameMode === 'europa' ? REGIONS_EUROPA
+      : gameMode === 'darmstadt' ? REGIONS_DARMSTADT
+      : gameMode === 'wiesbaden' ? REGIONS_WIESBADEN
+      : null;
+    if (modeRegions) mapBounds = regionsToBounds(modeRegions);
+  }
+  session.mapBounds = mapBounds;
+
   session.round = (session.round || 0) + 1;
   session.location = { ...base, heading };
   session.phase = 'game';
@@ -234,7 +255,8 @@ async function doStartGame(session, code, mode, customBounds) {
   io.to(code).emit('game-started', {
     panoId: session.location.pano_id,
     heading: session.location.heading,
-    players: activePlayers(session)
+    players: activePlayers(session),
+    mapBounds,
   });
   console.log('game started:', code, base.label);
 }
@@ -286,6 +308,7 @@ io.on('connection', (socket) => {
     if (isSpectator && session.phase === 'game' && session.location) {
       resp.panoId = session.location.pano_id;
       resp.heading = session.location.heading;
+      resp.mapBounds = session.mapBounds || null;
     }
     cb(resp);
     console.log(`${name} joined ${code}${isSpectator ? ' (spectator)' : ''}`);
@@ -314,6 +337,7 @@ io.on('connection', (socket) => {
       if (session.phase === 'game' && session.location) {
         resp.panoId = session.location.pano_id;
         resp.heading = session.location.heading;
+        resp.mapBounds = session.mapBounds || null;
       }
       if (session.phase === 'results' && session.currentRoundData) {
         resp.roundData = session.currentRoundData;
@@ -364,6 +388,7 @@ io.on('connection', (socket) => {
       resp.panoId = session.location.pano_id;
       resp.heading = session.location.heading;
       resp.alreadyPinned = !!session.pins[socket.id];
+      resp.mapBounds = session.mapBounds || null;
     }
     if (session.phase === 'results' && session.currentRoundData) {
       resp.roundData = session.currentRoundData;

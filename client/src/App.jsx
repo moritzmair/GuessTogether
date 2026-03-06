@@ -82,7 +82,7 @@ export default function App() {
         }
         setSession((prev) => ({ ...(prev || {}), players: res.players }));
         if (res.phase === 'game' && res.panoId) {
-          setGamePano({ panoId: res.panoId, heading: res.heading });
+          setGamePano({ panoId: res.panoId, heading: res.heading, mapBounds: res.mapBounds || null });
           setAlreadyPinned(res.alreadyPinned || false);
           setIsSpectator(false);
           setPage('game');
@@ -100,8 +100,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    socket.on('game-started', ({ panoId, heading, players }) => {
-      setGamePano({ panoId, heading });
+    socket.on('game-started', ({ panoId, heading, players, mapBounds }) => {
+      setGamePano({ panoId, heading, mapBounds: mapBounds || null });
       setAlreadyPinned(false);
       setIsSpectator(false);
       if (players) setSession((s) => ({ ...s, players }));
@@ -143,7 +143,7 @@ export default function App() {
       }
       setSession({ ...saved, players: res.players });
       if (res.phase === 'game' && res.panoId) {
-        setGamePano({ panoId: res.panoId, heading: res.heading });
+        setGamePano({ panoId: res.panoId, heading: res.heading, mapBounds: res.mapBounds || null });
         setAlreadyPinned(res.alreadyPinned || false);
         setIsSpectator(false);
         setPage('game');
@@ -172,7 +172,7 @@ export default function App() {
           setSession(s);
           setIsSpectator(s.spectator || false);
           if (s.spectator && s.panoId) {
-            setGamePano({ panoId: s.panoId, heading: s.heading });
+            setGamePano({ panoId: s.panoId, heading: s.heading, mapBounds: s.mapBounds || null });
             setAlreadyPinned(false);
             setPage('game');
           } else {

@@ -81,10 +81,16 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
     if (isHost) return;
     if (leafletMap.current) return;
 
-    leafletMap.current = L.map(mapRef.current, { zoomControl: true }).setView([20, 0], 2);
+    leafletMap.current = L.map(mapRef.current, { zoomControl: true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap'
     }).addTo(leafletMap.current);
+
+    if (panoData?.mapBounds) {
+      leafletMap.current.fitBounds(panoData.mapBounds, { padding: [10, 10] });
+    } else {
+      leafletMap.current.setView([20, 0], 2);
+    }
 
     if (!isSpectator) {
       leafletMap.current.on('click', (e) => {
