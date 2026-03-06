@@ -137,7 +137,7 @@ const CITIES = [
   [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
 ];
 
-async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, maxTries = 100) {
   if (mode === 'grossstaedte') {
     for (let i = 0; i < maxTries; i++) {
       const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
@@ -151,7 +151,8 @@ async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
     throw new Error('Kein Street View gefunden');
   }
 
-  const regions = mode === 'europa' ? REGIONS_EUROPA
+  const regions = mode === 'custom' && customBounds ? [customBounds]
+    : mode === 'europa' ? REGIONS_EUROPA
     : mode === 'darmstadt' ? REGIONS_DARMSTADT
     : mode === 'wiesbaden' ? REGIONS_WIESBADEN
     : REGIONS_WELTWEIT;
@@ -209,7 +210,7 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
-async function doStartGame(session, code, mode) {
+async function doStartGame(session, code, mode, customBounds) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
@@ -218,8 +219,9 @@ async function doStartGame(session, code, mode) {
 
   const gameMode = mode || session.mode || 'weltweit';
   session.mode = gameMode;
+  if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode);
+  const base = await randomStreetViewLocation(gameMode, session.customBounds || null);
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   session.round = (session.round || 0) + 1;
@@ -373,11 +375,11 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async ({ mode } = {}) => {
+  socket.on('start-game', async ({ mode, customBounds } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await doStartGame(session, code, mode);
+    await doStartGame(session, code, mode, customBounds);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
@@ -435,6 +437,7 @@ io.on('connection', (socket) => {
     session.pins = {};
     session.location = null;
     session.leftThisRound = [];
+    session.customBounds = null;
     io.to(code).emit('back-to-lobby');
   });
 

@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import socket from '../socket.js';
 
 const MODES = [
@@ -8,11 +10,14 @@ const MODES = [
   { id: 'grossstaedte', label: '🏙️ Großstädte' },
   { id: 'darmstadt', label: '🦔 Darmstadt' },
   { id: 'wiesbaden', label: '🏛️ Wiesbaden' },
+  { id: 'custom', label: '✏️ Custom' },
 ];
 
 export default function Lobby({ session, onSessionUpdate }) {
   const [players, setPlayers] = useState(session.players || []);
   const [mode, setMode] = useState('weltweit');
+  const customMapRef = useRef(null);
+  const customMapInstance = useRef(null);
 
   const joinUrl = `${window.location.origin}?join=${session.code}`;
 
@@ -21,14 +26,44 @@ export default function Lobby({ session, onSessionUpdate }) {
       setPlayers(updatedPlayers);
       onSessionUpdate({ ...session, players: updatedPlayers });
     });
-
-    return () => {
-      socket.off('players-updated');
-    };
+    return () => { socket.off('players-updated'); };
   }, []);
 
+  useEffect(() => {
+    if (mode !== 'custom') {
+      if (customMapInstance.current) {
+        customMapInstance.current.remove();
+        customMapInstance.current = null;
+      }
+      return;
+    }
+    if (!customMapRef.current || customMapInstance.current) return;
+    const map = L.map(customMapRef.current).setView([50, 10], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+    customMapInstance.current = map;
+    return () => {
+      if (customMapInstance.current) {
+        customMapInstance.current.remove();
+        customMapInstance.current = null;
+      }
+    };
+  }, [mode]);
+
   function startGame() {
-    socket.emit('start-game', { mode });
+    if (mode === 'custom' && customMapInstance.current) {
+      const b = customMapInstance.current.getBounds();
+      socket.emit('start-game', {
+        mode: 'custom',
+        customBounds: {
+          lat: [b.getSouth(), b.getNorth()],
+          lng: [b.getWest(), b.getEast()],
+        },
+      });
+    } else {
+      socket.emit('start-game', { mode });
+    }
   }
 
   return (
@@ -85,13 +120,13 @@ export default function Lobby({ session, onSessionUpdate }) {
 
         {session.isHost ? (
           <>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
               {MODES.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => setMode(m.id)}
                   style={{
-                    flex: 1, margin: 0, padding: '6px 0', fontSize: '0.8rem',
+                    flex: '1 1 auto', margin: 0, padding: '6px 0', fontSize: '0.8rem',
                     background: mode === m.id ? '#4ade80' : '#2a2a2a',
                     color: mode === m.id ? '#111' : '#fff',
                     border: mode === m.id ? 'none' : '1px solid #444',
@@ -101,6 +136,16 @@ export default function Lobby({ session, onSessionUpdate }) {
                 </button>
               ))}
             </div>
+
+            {mode === 'custom' && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: 6 }}>
+                  Karte zoomen & verschieben – der sichtbare Ausschnitt wird als Spielgebiet genutzt
+                </div>
+                <div ref={customMapRef} style={{ width: '100%', height: 260, borderRadius: 8, overflow: 'hidden' }} />
+              </div>
+            )}
+
             <button onClick={startGame} disabled={players.length < 1}>
               Spiel starten ({players.length} Spieler)
             </button>
