@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import socket from '../socket.js';
 
 const ADJECTIVES = ['crazy', 'slow', 'fast', 'wild', 'lazy', 'tiny', 'brave', 'lucky', 'silly', 'sneaky', 'grumpy', 'happy', 'dark', 'bold', 'swift'];
@@ -10,16 +10,27 @@ function randomName() {
   return `${adj}-${animal}`;
 }
 
-export default function Home({ onJoined }) {
+export default function Home({ onJoined, savedSessions = [], onRejoin }) {
   const [name, setName] = useState(() => randomName());
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('join');
-    if (code) setJoinCode(code.toUpperCase());
+    if (!code) return;
+    const upper = code.toUpperCase();
+
+    // Passendes savedSession? → auto-rejoin ohne Namenseingabe
+    const matching = savedSessions.find((s) => s.code === upper && s.name);
+    if (matching) {
+      setLoading(true);
+      onRejoin(matching);
+      return;
+    }
+
+    setJoinCode(upper);
   }, []);
 
   function createSession() {
@@ -39,6 +50,14 @@ export default function Home({ onJoined }) {
       if (res.error) return setError(res.error);
       onJoined({ ...res, isHost: false, name: name.trim() });
     });
+  }
+
+  if (loading) {
+    return (
+      <div className="center">
+        <div style={{ color: '#aaa', fontSize: '1rem' }}>Verbinde…</div>
+      </div>
+    );
   }
 
   if (joinCode) {
@@ -92,6 +111,41 @@ export default function Home({ onJoined }) {
           <h1 style={{ margin: 0, fontSize: '2rem' }}>GuessTogether</h1>
           <p style={{ color: '#aaa', fontSize: '0.95rem', marginTop: 8 }}>Gemeinsam die Welt erraten</p>
         </div>
+
+        {savedSessions.length > 0 && (
+          <div style={{
+            background: '#1a2a1a', border: '1px solid #4ade80', borderRadius: 10,
+            padding: '14px 16px', marginBottom: 24,
+          }}>
+            <div style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '0.85rem', marginBottom: 10 }}>
+              🔄 {savedSessions.length === 1 ? 'Laufendes Spiel gefunden' : 'Laufende Spiele gefunden'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {savedSessions.map((s) => (
+                <div
+                  key={`${s.code}:${s.isHost ? 'host' : s.name}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10 }}
+                >
+                  <span style={{ fontSize: '1.1rem' }}>{s.isHost ? '🖥️' : '👤'}</span>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ color: '#e0e0e0', fontSize: '0.9rem', fontWeight: 'bold' }}>
+                      {s.isHost ? 'Host' : s.name}
+                    </span>
+                    <span style={{ color: '#888', fontSize: '0.8rem', marginLeft: 8 }}>
+                      Session {s.code}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => { setLoading(true); onRejoin(s); }}
+                    style={{ margin: 0, padding: '6px 14px', background: '#4ade80', color: '#111', fontWeight: 'bold', fontSize: '0.8rem', width: 'auto', flexShrink: 0 }}
+                  >
+                    Beitreten
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div style={{ background: '#1a1a2e', borderRadius: 12, padding: 20, marginBottom: 24 }}>
           <h3 style={{ margin: '0 0 16px 0', color: '#e0e0e0', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: 1 }}>

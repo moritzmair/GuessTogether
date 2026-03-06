@@ -170,11 +170,11 @@ async function randomStreetViewLocation(mode = 'weltweit', maxTries = 100) {
   throw new Error('Kein Street View gefunden');
 }
 
-// Runde abschließen – nur aktive (nicht temporarilyGone) Spieler erhalten Punkte
+// Runde abschließen – nur aktive (nicht temporarilyGone, nicht spectator) Spieler erhalten Punkte
 function finishRound(session, code) {
   if (session.phase !== 'game') return;
 
-  const activePlayers = session.players.filter((p) => !p.temporarilyGone);
+  const activePlayers = session.players.filter((p) => !p.temporarilyGone && !p.spectator);
 
   const results = activePlayers.map((p) => {
     const pin = session.pins[p.id];
@@ -204,9 +204,37 @@ function finishRound(session, code) {
   io.to(code).emit('round-ended', roundData);
 }
 
-// Aktive Spieler (nicht temporarilyGone) für Clients
+// Aktive Spieler (nicht temporarilyGone) für Clients – Spectators werden mitgesendet
 function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
+}
+
+async function doStartGame(session, code, mode) {
+  if (session.round >= TOTAL_ROUNDS) {
+    session.round = 0;
+    session.players.forEach((p) => (p.score = 0));
+    session.leftThisRound = [];
+  }
+
+  const gameMode = mode || session.mode || 'weltweit';
+  session.mode = gameMode;
+
+  const base = await randomStreetViewLocation(gameMode);
+  const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
+
+  session.round = (session.round || 0) + 1;
+  session.location = { ...base, heading };
+  session.phase = 'game';
+  session.pins = {};
+  session.readyPlayers = new Set();
+  session.players.forEach((p) => { p.temporarilyGone = false; p.spectator = false; });
+
+  io.to(code).emit('game-started', {
+    panoId: session.location.pano_id,
+    heading: session.location.heading,
+    players: activePlayers(session)
+  });
+  console.log('game started:', code, base.label);
 }
 
 app.get('/health', (_, res) => res.json({ ok: true }));
@@ -241,17 +269,24 @@ io.on('connection', (socket) => {
   socket.on('join-session', ({ code, name }, cb) => {
     const session = sessions[code];
     if (!session) return cb({ error: 'Session nicht gefunden' });
-    if (session.phase !== 'lobby') return cb({ error: 'Spiel läuft bereits' });
     if (session.players.some((p) => p.name === name)) return cb({ error: 'Name bereits vergeben' });
 
-    session.players.push({ id: socket.id, name, score: 0 });
+    const isSpectator = session.phase !== 'lobby';
+    const player = { id: socket.id, name, score: 0 };
+    if (isSpectator) player.spectator = true;
+    session.players.push(player);
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
 
     io.to(code).emit('players-updated', activePlayers(session));
-    cb({ code, players: activePlayers(session), isHost: false });
-    console.log(`${name} joined ${code}`);
+    const resp = { code, players: activePlayers(session), isHost: false, spectator: isSpectator };
+    if (isSpectator && session.phase === 'game' && session.location) {
+      resp.panoId = session.location.pano_id;
+      resp.heading = session.location.heading;
+    }
+    cb(resp);
+    console.log(`${name} joined ${code}${isSpectator ? ' (spectator)' : ''}`);
   });
 
   // Wiederbeitreten nach Verbindungsunterbrechung
@@ -342,51 +377,51 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-
-    if (session.round >= TOTAL_ROUNDS) {
-      session.round = 0;
-      session.players.forEach((p) => (p.score = 0));
-      session.leftThisRound = [];
-    }
-
-    const gameMode = mode || session.mode || 'weltweit';
-    session.mode = gameMode;
-
-    const base = await randomStreetViewLocation(gameMode);
-    const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
-
-    session.round = (session.round || 0) + 1;
-    session.location = { ...base, heading };
-    session.phase = 'game';
-    session.pins = {};
-    // temporarilyGone-Flag zurücksetzen
-    session.players.forEach((p) => { p.temporarilyGone = false; });
-
-    io.to(code).emit('game-started', {
-      panoId: session.location.pano_id,
-      heading: session.location.heading,
-      players: activePlayers(session)
-    });
-    console.log('game started:', code, base.label);
+    await doStartGame(session, code, mode);
   });
 
-  // Spieler setzt Pin (Host nimmt nicht teil)
+  // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
+  socket.on('player-ready', () => {
+    const code = socket.data.code;
+    const session = sessions[code];
+    if (!session || session.phase !== 'results') return;
+    if (socket.id === session.host) return;
+
+    const player = session.players.find((p) => p.id === socket.id);
+    if (!player) return;
+
+    if (!session.readyPlayers) session.readyPlayers = new Set();
+    session.readyPlayers.add(player.name);
+
+    io.to(code).emit('ready-updated', [...session.readyPlayers]);
+
+    // Alle aktiven Spieler bereit → nächste Runde automatisch starten
+    const active = session.players.filter((p) => !p.temporarilyGone && !p.spectator);
+    if (active.length > 0 && active.every((p) => session.readyPlayers.has(p.name))) {
+      doStartGame(session, code, null);
+    }
+  });
+
+  // Spieler setzt Pin (Host + Spectators nehmen nicht teil)
   socket.on('place-pin', ({ lat, lng }) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.phase !== 'game') return;
     if (socket.id === session.host) return;
+    const placing = session.players.find((p) => p.id === socket.id);
+    if (placing?.spectator) return;
 
     session.pins[socket.id] = { lat, lng };
 
-    // Nur aktive Spieler für die Zählung
-    const active = session.players.filter((p) => !p.temporarilyGone);
-    const totalPlayers = active.length;
-    const pinCount = active.filter((p) => session.pins[p.id]).length;
+    // Alle non-spectator Spieler (inkl. temporarilyGone) für korrekten Zähler
+    const allActive = session.players.filter((p) => !p.spectator);
+    const totalPlayers = allActive.length;
+    const pinCount = allActive.filter((p) => session.pins[p.id]).length;
 
     io.to(code).emit('pin-placed', { playerId: socket.id, pinCount, totalPlayers });
 
-    if (pinCount >= totalPlayers) {
+    // Runde beenden nur wenn ALLE non-spectator Spieler (inkl. temporarilyGone) gepinnt haben
+    if (allActive.length > 0 && allActive.every((p) => session.pins[p.id])) {
       finishRound(session, code);
     }
   });
@@ -434,16 +469,11 @@ io.on('connection', (socket) => {
     // Spieler als temporär weg markieren – nicht sofort entfernen
     leavingPlayer.temporarilyGone = true;
 
-    // Runden-Ende prüfen: vielleicht haben alle verbleibenden aktiven Spieler schon gepinnt
-    if (session.phase === 'game') {
-      const active = session.players.filter((p) => !p.temporarilyGone);
-      const pinCount = active.filter((p) => session.pins[p.id]).length;
-      if (active.length > 0 && pinCount >= active.length) {
-        finishRound(session, code);
-      }
-    }
+    // Host über den Disconnect informieren (mit temporarilyGone-Flag im Payload)
+    io.to(code).emit('players-updated', session.players.filter((p) => !p.spectator));
 
     // Grace-Period starten – danach Spieler wirklich entfernen
+    // KEIN sofortiges Runden-Ende: temporarilyGone-Spieler zählen noch als "ausstehend"
     const timer = setTimeout(() => {
       delete pendingDisconnects[key];
       const sess = sessions[code];
@@ -462,6 +492,15 @@ io.on('connection', (socket) => {
         delete sessions[code];
         console.log('session deleted (leer):', code);
         return;
+      }
+
+      // Jetzt Runden-Ende prüfen: Grace abgelaufen, Spieler ist raus
+      if (sess.phase === 'game') {
+        const allActive = sess.players.filter((p) => !p.spectator);
+        if (allActive.length > 0 && allActive.every((p) => sess.pins[p.id])) {
+          finishRound(sess, code);
+          return;
+        }
       }
 
       io.to(code).emit('player-left', {

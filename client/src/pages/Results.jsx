@@ -1,12 +1,27 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import socket from '../socket.js';
 
 export default function Results({ results, session, onNextRound, onNewGame, onShowSummary }) {
   const mapRef = useRef(null);
   const leafletMap = useRef(null);
+  const [readyIds, setReadyIds] = useState([]);
+  const [isReady, setIsReady] = useState(false);
 
   const { results: players, location, round, totalRounds } = results;
+  const activePlayers = players.filter((p) => !p.left);
+  const readyCount = readyIds.length;
+  const totalCount = activePlayers.length;
+
+  useEffect(() => {
+    socket.on('ready-updated', (ids) => setReadyIds(ids));
+    return () => socket.off('ready-updated');
+  }, []);
+
+  function handleReady() {
+    setIsReady(true);
+    socket.emit('player-ready');
+  }
 
   // Ergebniskarte mit Pins und Zielpunkt
   useEffect(() => {
@@ -18,7 +33,6 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
 
     const bounds = L.latLngBounds([[location.lat, location.lng]]);
 
-    // Zielpunkt (rot)
     const targetIcon = L.divIcon({
       html: '<div style="background:#f87171;width:16px;height:16px;border-radius:50%;border:3px solid #fff;"></div>',
       iconSize: [16, 16],
@@ -29,7 +43,6 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
       .addTo(leafletMap.current)
       .openPopup();
 
-    // Spieler-Pins mit Linien zum Ziel
     players.forEach((p) => {
       if (!p.pin) return;
       bounds.extend([p.pin.lat, p.pin.lng]);
@@ -65,10 +78,8 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
 
-      {/* Ergebniskarte */}
       <div ref={mapRef} style={{ flex: '0 0 40%' }} />
 
-      {/* Rangliste */}
       <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
         <h2 style={{ textAlign: 'center', marginBottom: 4 }}>
           📍 Lösung: {location.label}
@@ -98,13 +109,16 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
                 {p.left ? '🚪' : (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`)}
               </span>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 'bold' }}>
+                <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   {p.name}
                   {p.left && (
-                    <span style={{ marginLeft: 8, fontSize: '0.75rem', color: '#888' }}>verlassen</span>
+                    <span style={{ fontSize: '0.75rem', color: '#888' }}>verlassen</span>
                   )}
                   {!p.left && p.id === socket.id && (
-                    <span style={{ marginLeft: 8, fontSize: '0.75rem', color: '#4ade80' }}>Du</span>
+                    <span style={{ fontSize: '0.75rem', color: '#4ade80' }}>Du</span>
+                  )}
+                  {!p.left && round < totalRounds && readyIds.includes(p.name) && (
+                    <span style={{ fontSize: '0.75rem', color: '#4ade80', background: 'rgba(74,222,128,0.12)', border: '1px solid #4ade80', borderRadius: 4, padding: '1px 6px' }}>✓ Bereit</span>
                   )}
                 </div>
                 <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
@@ -128,11 +142,27 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
             ▶ Nächste Runde
           </button>
         )}
+
         {round < totalRounds && !session.isHost && (
-          <p style={{ textAlign: 'center', color: '#aaa', marginTop: 16 }}>
-            Warte auf Host…
-          </p>
+          <div style={{ marginTop: 16 }}>
+            {!isReady ? (
+              <button
+                onClick={handleReady}
+                style={{ width: '100%', background: '#4ade80', color: '#111', fontWeight: 'bold' }}
+              >
+                ✅ Bereit für nächste Runde
+              </button>
+            ) : (
+              <div style={{
+                background: 'rgba(74,222,128,0.12)', border: '1px solid #4ade80',
+                borderRadius: 8, padding: '12px 16px', textAlign: 'center', color: '#4ade80'
+              }}>
+                ✅ Du bist bereit – warte auf andere ({readyCount}/{totalCount})
+              </div>
+            )}
+          </div>
         )}
+
         {round >= totalRounds && (
           <button onClick={onShowSummary} style={{ marginTop: 16 }}>
             📊 Zusammenfassung anzeigen
