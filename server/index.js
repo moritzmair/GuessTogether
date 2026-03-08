@@ -453,7 +453,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Zurück zur Lobby (nur Host)
+  // Zurück zur Lobby (nur Host) – setzt Spiel vollständig zurück
   socket.on('back-to-lobby', () => {
     const code = socket.data.code;
     const session = sessions[code];
@@ -461,8 +461,10 @@ io.on('connection', (socket) => {
     session.phase = 'lobby';
     session.pins = {};
     session.location = null;
+    session.round = 0;
     session.leftThisRound = [];
     session.customBounds = null;
+    session.players.forEach((p) => { p.score = 0; p.spectator = false; p.temporarilyGone = false; });
     io.to(code).emit('back-to-lobby');
   });
 

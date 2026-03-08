@@ -25,6 +25,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
   const [leftNotice, setLeftNotice] = useState(null);
   const [players, setPlayers] = useState(session.players || []);
   const [pinnedIds, setPinnedIds] = useState(new Set());
+  const [showAbortConfirm, setShowAbortConfirm] = useState(false);
 
   const activeSeatCount = players.filter((p) => !p.spectator).length;
   const [totalPlayers, setTotalPlayers] = useState(activeSeatCount);
@@ -159,12 +160,72 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
             ⚠️ Street View nicht verfügbar für diesen Standort
           </div>
         )}
-        <div style={{
-          position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)',
-          borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 10
-        }}>
-          🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
+
+        {/* Oben-links: Abbrechen-Button + Pin-Counter */}
+        <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button
+            onClick={() => setShowAbortConfirm(true)}
+            style={{
+              background: 'rgba(180,30,30,0.85)',
+              border: 'none',
+              borderRadius: 6,
+              padding: '4px 10px',
+              fontSize: '0.8rem',
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              margin: 0,
+              width: 'auto',
+            }}
+          >
+            ✕ Spiel beenden
+          </button>
+          <div style={{
+            background: 'rgba(0,0,0,0.7)',
+            borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff'
+          }}>
+            🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
+          </div>
         </div>
+
+        {/* Bestätigungs-Dialog */}
+        {showAbortConfirm && (
+          <div style={{
+            position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100
+          }}>
+            <div style={{
+              background: '#1e1e2e', borderRadius: 10, padding: '24px 28px', maxWidth: 320,
+              textAlign: 'center', color: '#fff', boxShadow: '0 4px 24px rgba(0,0,0,0.6)'
+            }}>
+              <div style={{ fontSize: '1.4rem', marginBottom: 8 }}>⏹ Spiel abbrechen?</div>
+              <div style={{ fontSize: '0.88rem', color: '#aaa', marginBottom: 20 }}>
+                Alle Spieler werden zurück in die Lobby geschickt. Die aktuellen Punkte gehen verloren.
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button
+                  onClick={() => setShowAbortConfirm(false)}
+                  style={{
+                    background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 6,
+                    padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem', margin: 0
+                  }}
+                >
+                  Abbrechen
+                </button>
+                <button
+                  onClick={() => { socket.emit('back-to-lobby'); setShowAbortConfirm(false); }}
+                  style={{
+                    background: '#b41e1e', border: 'none', borderRadius: 6,
+                    padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem',
+                    fontWeight: 'bold', margin: 0
+                  }}
+                >
+                  Ja, beenden
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{
           position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.75)',
           borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', color: '#fff', zIndex: 10,
