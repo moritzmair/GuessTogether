@@ -62,9 +62,10 @@ function bearing(lat1, lng1, lat2, lng2) {
 }
 
 // Street View Metadata abrufen – sucht Panorama im gegebenen Radius (in Metern)
-function fetchNearestPanorama(lat, lng, radiusMeters = 50000) {
+// source: 'default' (alle) | 'outdoor' (kein Indoor)
+function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
   return new Promise((resolve) => {
-    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&key=${MAPS_KEY}`;
+    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&source=${source}&key=${MAPS_KEY}`;
     https.get(url, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
@@ -145,15 +146,23 @@ const CITIES = [
   [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
 ];
 
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, maxTries = 100) {
+// panoramaFilter: 'all' | 'outdoor' | 'google_only'
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', maxTries = 100) {
+  // 'outdoor' und 'google_only' schließen Indoor-Panoramen per API-Source-Parameter aus
+  const source = (panoramaFilter === 'outdoor' || panoramaFilter === 'google_only') ? 'outdoor' : 'default';
+
   if (mode === 'grossstaedte') {
     for (let i = 0; i < maxTries; i++) {
       const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
       const jLat = seedLat + (Math.random() - 0.5) * 0.05;
       const jLng = seedLng + (Math.random() - 0.5) * 0.05;
-      const meta = await fetchNearestPanorama(jLat, jLng, 2000);
+      const meta = await fetchNearestPanorama(jLat, jLng, 2000, source);
       if (meta.status !== 'OK' || !meta.pano_id) continue;
-      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+      if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
+        console.log(`[grossstaedte] Übersprungen (nicht Google): "${meta.copyright}"`);
+        continue;
+      }
+      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
       return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
     }
     throw new Error('Kein Street View gefunden');
@@ -168,12 +177,16 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
     const r = regions[Math.floor(Math.random() * regions.length)];
     const seedLat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
     const seedLng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
-    const meta = await fetchNearestPanorama(seedLat, seedLng, 10000);
+    const meta = await fetchNearestPanorama(seedLat, seedLng, 10000, source);
     if (meta.status !== 'OK' || !meta.pano_id) {
       console.log(`[${mode}] Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
       continue;
     }
-    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+    if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
+      console.log(`[${mode}] Versuch ${i + 1}: Übersprungen (nicht Google): "${meta.copyright}"`);
+      continue;
+    }
+    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
     return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
   }
   throw new Error('Kein Street View gefunden');
@@ -218,7 +231,7 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
-async function doStartGame(session, code, mode, customBounds) {
+async function doStartGame(session, code, mode, customBounds, panoramaFilter) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
@@ -226,10 +239,12 @@ async function doStartGame(session, code, mode, customBounds) {
   }
 
   const gameMode = mode || session.mode || 'weltweit';
+  const filter = panoramaFilter || session.panoramaFilter || 'all';
   session.mode = gameMode;
+  session.panoramaFilter = filter;
   if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode, session.customBounds || null);
+  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, filter);
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   const cb = session.customBounds;
@@ -400,11 +415,11 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async ({ mode, customBounds } = {}) => {
+  socket.on('start-game', async ({ mode, customBounds, panoramaFilter } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await doStartGame(session, code, mode, customBounds);
+    await doStartGame(session, code, mode, customBounds, panoramaFilter);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)

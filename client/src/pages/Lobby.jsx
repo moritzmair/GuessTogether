@@ -13,9 +13,16 @@ const MODES = [
   { id: 'custom', label: '✏️ Custom' },
 ];
 
+const PANORAMA_FILTERS = [
+  { id: 'all',         label: '🌐 Alle Panoramen',        desc: 'Straße, Indoor, Nutzer-Fotos' },
+  { id: 'outdoor',     label: '🚶 Kein Indoor',            desc: 'Nur Außenaufnahmen' },
+  { id: 'google_only', label: '🚗 Nur Google Street View', desc: 'Offizielles Google-Kameramobil' },
+];
+
 export default function Lobby({ session, onSessionUpdate }) {
   const [players, setPlayers] = useState(session.players || []);
   const [mode, setMode] = useState('weltweit');
+  const [panoramaFilter, setPanoramaFilter] = useState('all');
   const customMapRef = useRef(null);
   const customMapInstance = useRef(null);
 
@@ -56,13 +63,14 @@ export default function Lobby({ session, onSessionUpdate }) {
       const b = customMapInstance.current.getBounds();
       socket.emit('start-game', {
         mode: 'custom',
+        panoramaFilter,
         customBounds: {
           lat: [b.getSouth(), b.getNorth()],
           lng: [b.getWest(), b.getEast()],
         },
       });
     } else {
-      socket.emit('start-game', { mode });
+      socket.emit('start-game', { mode, panoramaFilter });
     }
   }
 
@@ -120,21 +128,51 @@ export default function Lobby({ session, onSessionUpdate }) {
 
         {session.isHost ? (
           <>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  style={{
-                    flex: '1 1 auto', margin: 0, padding: '6px 0', fontSize: '0.8rem',
-                    background: mode === m.id ? '#4ade80' : '#2a2a2a',
-                    color: mode === m.id ? '#111' : '#fff',
-                    border: mode === m.id ? 'none' : '1px solid #444',
-                  }}
-                >
-                  {m.label}
-                </button>
-              ))}
+            <div style={{ marginBottom: 4 }}>
+              <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Spielgebiet</p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                {MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setMode(m.id)}
+                    style={{
+                      flex: '1 1 auto', margin: 0, padding: '6px 0', fontSize: '0.8rem',
+                      background: mode === m.id ? '#4ade80' : '#2a2a2a',
+                      color: mode === m.id ? '#111' : '#fff',
+                      border: mode === m.id ? 'none' : '1px solid #444',
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Panorama-Filter</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {PANORAMA_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setPanoramaFilter(f.id)}
+                    style={{
+                      margin: 0,
+                      padding: '8px 12px',
+                      fontSize: '0.82rem',
+                      textAlign: 'left',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      background: panoramaFilter === f.id ? '#4ade80' : '#2a2a2a',
+                      color: panoramaFilter === f.id ? '#111' : '#fff',
+                      border: panoramaFilter === f.id ? 'none' : '1px solid #444',
+                    }}
+                  >
+                    <span style={{ fontWeight: panoramaFilter === f.id ? 700 : 400 }}>{f.label}</span>
+                    <span style={{ fontSize: '0.7rem', opacity: 0.7, marginLeft: 8 }}>{f.desc}</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             {mode === 'custom' && (
