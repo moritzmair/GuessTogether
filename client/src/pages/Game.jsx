@@ -80,7 +80,7 @@ export default function Game({ session, panoData, alreadyPinned = false }) {
     if (leafletMap.current) return;
 
     leafletMap.current = L.map(mapRef.current, { zoomControl: true }).setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap'
     }).addTo(leafletMap.current);
 
