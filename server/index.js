@@ -280,6 +280,41 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 
 app.get('/api/maps-key', (_, res) => res.json({ key: MAPS_KEY }));
 
+// Solo-Modus: Neue Runde starten – gibt Panorama-Daten zurück ohne Session
+app.get('/api/solo/start-round', async (req, res) => {
+  const mode = req.query.mode || 'weltweit';
+  const panoramaFilter = req.query.panoramaFilter || 'all';
+  let customBounds = null;
+  if (req.query.customBounds) {
+    try { customBounds = JSON.parse(req.query.customBounds); } catch (_) {}
+  }
+  try {
+    const base = await randomStreetViewLocation(mode, customBounds, panoramaFilter);
+    const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
+
+    let mapBounds = null;
+    if (mode === 'custom' && customBounds) {
+      mapBounds = [[customBounds.lat[0], customBounds.lng[0]], [customBounds.lat[1], customBounds.lng[1]]];
+    } else {
+      const modeRegions = mode === 'europa' ? REGIONS_EUROPA
+        : mode === 'darmstadt' ? REGIONS_DARMSTADT
+        : mode === 'wiesbaden' ? REGIONS_WIESBADEN
+        : null;
+      if (modeRegions) mapBounds = regionsToBounds(modeRegions);
+    }
+
+    res.json({
+      panoId: base.pano_id,
+      heading,
+      location: { lat: base.lat, lng: base.lng, label: base.label },
+      mapBounds,
+    });
+  } catch (err) {
+    console.error('[solo] Fehler:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
 

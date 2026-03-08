@@ -10,7 +10,7 @@ function randomName() {
   return `${adj}-${animal}`;
 }
 
-export default function Home({ onJoined, savedSessions = [], onRejoin }) {
+export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo }) {
   const [name, setName] = useState(() => randomName());
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState('');
@@ -147,36 +147,61 @@ export default function Home({ onJoined, savedSessions = [], onRejoin }) {
           </div>
         )}
 
-        <div style={{ background: '#1a1a2e', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-          <h3 style={{ margin: '0 0 16px 0', color: '#e0e0e0', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: 1 }}>
-            So funktioniert's
+        {/* Modus-Auswahl */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+          {/* Solo */}
+          <button
+            onClick={onSolo}
+            disabled={loading}
+            style={{
+              width: '100%', fontSize: '1.05rem', padding: '14px',
+              background: 'linear-gradient(135deg, #6c3fd4 0%, #4a9eff 100%)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10
+            }}
+          >
+            <span style={{ fontSize: '1.3rem' }}>🕹️</span>
+            <div style={{ textAlign: 'left' }}>
+              <div style={{ fontWeight: 'bold' }}>Solo spielen</div>
+              <div style={{ fontSize: '0.75rem', opacity: 0.85, fontWeight: 'normal' }}>Alleine – Street View & Karte auf einem Gerät</div>
+            </div>
+          </button>
+
+          {/* Multiplayer */}
+          <button
+            onClick={createSession}
+            disabled={loading}
+            style={{
+              width: '100%', fontSize: '1.05rem', padding: '14px', background: '#4a9eff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10
+            }}
+          >
+            <span style={{ fontSize: '1.3rem' }}>🖥️</span>
+            <div style={{ textAlign: 'left' }}>
+              <div style={{ fontWeight: 'bold' }}>{loading ? 'Erstelle Session...' : 'Multiplayer – Session erstellen'}</div>
+              <div style={{ fontSize: '0.75rem', opacity: 0.85, fontWeight: 'normal' }}>Host am großen Bildschirm, Spieler per Handy</div>
+            </div>
+          </button>
+        </div>
+
+        {/* Multiplayer-Anleitung */}
+        <div style={{ background: '#1a1a2e', borderRadius: 12, padding: 16, marginBottom: 8 }}>
+          <h3 style={{ margin: '0 0 12px 0', color: '#e0e0e0', fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: 1 }}>
+            Multiplayer – So funktioniert's
           </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
               { icon: '📺', text: 'Session auf großem Bildschirm erstellen (TV, Laptop, Tablet)' },
               { icon: '📱', text: 'QR-Code scannen oder Link teilen – Spieler treten bei' },
               { icon: '▶️', text: 'Host startet die Runde und steuert das Spiel' },
               { icon: '📍', text: 'Spieler tippen auf die Karte, wo sie den Ort vermuten' },
             ].map((step, i) => (
-              <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>{step.icon}</span>
-                <span style={{ color: '#bbb', fontSize: '0.9rem', lineHeight: 1.5 }}>{step.text}</span>
+              <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: '1.2rem', flexShrink: 0 }}>{step.icon}</span>
+                <span style={{ color: '#bbb', fontSize: '0.85rem', lineHeight: 1.5 }}>{step.text}</span>
               </div>
             ))}
           </div>
         </div>
-
-        <button
-          onClick={createSession}
-          disabled={loading}
-          style={{ width: '100%', fontSize: '1.1rem', padding: '14px', background: '#4a9eff' }}
-        >
-          {loading ? 'Erstelle Session...' : '🖥️ Session erstellen'}
-        </button>
-
-        <p style={{ color: '#555', fontSize: '0.8rem', textAlign: 'center', marginTop: 16, marginBottom: 0 }}>
-          Spieler treten über QR-Code oder Link bei
-        </p>
 
         {error && <p className="error">{error}</p>}
       </div>
