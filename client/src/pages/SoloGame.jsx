@@ -40,17 +40,20 @@ function distanceKm(lat1, lng1, lat2, lng2) {
 
 export default function SoloGame({ onBack }) {
   // phases: 'setup' | 'loading' | 'playing' | 'roundResult' | 'summary'
-  const [phase, setPhase]               = useState('setup');
-  const [mode, setMode]                 = useState('weltweit');
-  const [panoramaFilter, setPanorama]   = useState('all');
-  const [round, setRound]               = useState(0);
-  const [totalScore, setTotalScore]     = useState(0);
-  const [history, setHistory]           = useState([]);
-  const [currentRound, setCurrentRound] = useState(null);
-  const [pin, setPin]                   = useState(null);
-  const [panoError, setPanoError]       = useState(false);
-  const [loadError, setLoadError]       = useState(null);
-  const [roundResult, setRoundResult]   = useState(null);
+  const [phase, setPhase]                   = useState('setup');
+  const [mode, setMode]                     = useState('weltweit');
+  const [panoramaFilter, setPanorama]       = useState('all');
+  const [round, setRound]                   = useState(0);
+  const [totalScore, setTotalScore]         = useState(0);
+  const [history, setHistory]               = useState([]);
+  const [currentRound, setCurrentRound]     = useState(null);
+  const [pin, setPin]                       = useState(null);
+  const [panoError, setPanoError]           = useState(false);
+  const [loadError, setLoadError]           = useState(null);
+  const [roundResult, setRoundResult]       = useState(null);
+  // Custom-Bounds werden beim Start einmalig gespeichert, damit alle Folgerunden
+  // dieselben Bounds nutzen – auch nachdem die Custom-Map-Instanz zerstört wurde.
+  const [savedCustomBounds, setSavedCustomBounds] = useState(null);
 
   const panoRef           = useRef(null);
   const svInstanceRef     = useRef(null);
@@ -214,7 +217,8 @@ export default function SoloGame({ onBack }) {
   }, [phase, roundResult]);
 
   // ─── Runde laden ──────────────────────────────────────────────────────────
-  async function startRound(nextRound) {
+  // customBoundsOverride: wird nur beim Erstaufruf übergeben (bevor Map zerstört wird)
+  async function startRound(nextRound, customBoundsOverride = null) {
     setPhase('loading');
     setLoadError(null);
     setPin(null);
@@ -222,10 +226,10 @@ export default function SoloGame({ onBack }) {
     if (gameLeaflet.current)   { gameLeaflet.current.remove();   gameLeaflet.current   = null; }
     if (resultLeaflet.current) { resultLeaflet.current.remove(); resultLeaflet.current = null; }
 
+    // Folgerunden: gespeicherte Bounds aus State verwenden
+    const cb = customBoundsOverride ?? savedCustomBounds;
     let url = `/api/solo/start-round?mode=${mode}&panoramaFilter=${panoramaFilter}`;
-    if (mode === 'custom' && customMapInstance.current) {
-      const b = customMapInstance.current.getBounds();
-      const cb = { lat: [b.getSouth(), b.getNorth()], lng: [b.getWest(), b.getEast()] };
+    if (mode === 'custom' && cb) {
       url += `&customBounds=${encodeURIComponent(JSON.stringify(cb))}`;
     }
 
@@ -241,10 +245,17 @@ export default function SoloGame({ onBack }) {
   }
 
   function handleStartGame() {
+    // Custom-Bounds JETZT lesen, solange die Map-Instanz noch lebt
+    let cb = null;
+    if (mode === 'custom' && customMapInstance.current) {
+      const b = customMapInstance.current.getBounds();
+      cb = { lat: [b.getSouth(), b.getNorth()], lng: [b.getWest(), b.getEast()] };
+    }
+    setSavedCustomBounds(cb);
     setRound(0);
     setTotalScore(0);
     setHistory([]);
-    startRound(1);
+    startRound(1, cb);
   }
 
   function submitPin() {
@@ -275,6 +286,7 @@ export default function SoloGame({ onBack }) {
     setCurrentRound(null);
     setRoundResult(null);
     setPin(null);
+    setSavedCustomBounds(null);
     pinRef.current = null;
     if (gameLeaflet.current)   { gameLeaflet.current.remove();   gameLeaflet.current   = null; }
     if (resultLeaflet.current) { resultLeaflet.current.remove(); resultLeaflet.current = null; }
