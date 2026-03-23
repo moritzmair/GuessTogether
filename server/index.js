@@ -63,8 +63,9 @@ function bearing(lat1, lng1, lat2, lng2) {
 
 // Street View Metadata abrufen – sucht Panorama im gegebenen Radius (in Metern)
 // source: 'default' (alle) | 'outdoor' (kein Indoor)
-function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
-  return new Promise((resolve) => {
+// Bei OVER_QUERY_LIMIT: kurz warten und einmal wiederholen
+async function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
+  const doFetch = () => new Promise((resolve) => {
     const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&source=${source}&key=${MAPS_KEY}`;
     https.get(url, (res) => {
       let data = '';
@@ -75,20 +76,26 @@ function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default'
       });
     }).on('error', () => resolve({ status: 'ERROR' }));
   });
+
+  const result = await doFetch();
+  if (result.status === 'OVER_QUERY_LIMIT') {
+    console.warn('[api] OVER_QUERY_LIMIT – warte 1s');
+    await new Promise((r) => setTimeout(r, 1000));
+    return doFetch();
+  }
+  return result;
 }
 
-// Fahrtrichtung ermitteln: benachbartes Panorama suchen und Bearing berechnen
+// Fahrtrichtung ermitteln: bricht nach erstem Treffer ab (spart API-Calls)
 async function fetchAutoHeading(lat, lng, pano_id) {
   const offsets = [[0.001, 0], [0, 0.001], [-0.001, 0], [0, -0.001]];
-  let bestHeading = null;
   for (const [dlat, dlng] of offsets) {
     const meta2 = await fetchNearestPanorama(lat + dlat, lng + dlng, 100);
     if (meta2.status === 'OK' && meta2.pano_id !== pano_id) {
-      const h = Math.round(bearing(lat, lng, meta2.location.lat, meta2.location.lng));
-      if (bestHeading === null) bestHeading = h;
+      return Math.round(bearing(lat, lng, meta2.location.lat, meta2.location.lng));
     }
   }
-  return bestHeading ?? 0;
+  return 0;
 }
 
 const TOTAL_ROUNDS = 5;
@@ -167,7 +174,7 @@ const CITIES = [
 ];
 
 // panoramaFilter: 'all' | 'outdoor' | 'google_only'
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', usedPanoIds = new Set(), maxTries = 150) {
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', usedPanoIds = new Set(), maxTries = 40) {
   // 'outdoor' und 'google_only' schließen Indoor-Panoramen per API-Source-Parameter aus
   const source = (panoramaFilter === 'outdoor' || panoramaFilter === 'google_only') ? 'outdoor' : 'default';
 
