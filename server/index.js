@@ -145,7 +145,7 @@ const CITIES = [
   [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
 ];
 
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, maxTries = 100) {
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, usedPanoIds = new Set(), maxTries = 150) {
   if (mode === 'grossstaedte') {
     for (let i = 0; i < maxTries; i++) {
       const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
@@ -153,6 +153,7 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
       const jLng = seedLng + (Math.random() - 0.5) * 0.05;
       const meta = await fetchNearestPanorama(jLat, jLng, 2000);
       if (meta.status !== 'OK' || !meta.pano_id) continue;
+      if (usedPanoIds.has(meta.pano_id)) continue;
       console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
       return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
     }
@@ -173,33 +174,45 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
       console.log(`[${mode}] Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
       continue;
     }
+    if (usedPanoIds.has(meta.pano_id)) {
+      console.log(`[${mode}] Versuch ${i + 1}: Panorama bereits benutzt, überspringe`);
+      continue;
+    }
     console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
     return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
   }
   throw new Error('Kein Street View gefunden');
 }
 
-// Runde abschließen – nur aktive (nicht temporarilyGone, nicht spectator) Spieler erhalten Punkte
+// Runde abschließen
 function finishRound(session, code) {
   if (session.phase !== 'game') return;
 
-  const activePlayers = session.players.filter((p) => !p.temporarilyGone && !p.spectator);
+  if (session.countdownTimer) {
+    clearTimeout(session.countdownTimer);
+    session.countdownTimer = null;
+  }
 
-  const results = activePlayers.map((p) => {
+  const nonSpectators = session.players.filter((p) => !p.spectator);
+
+  const results = nonSpectators.map((p) => {
     const pin = session.pins[p.id];
     const dist = pin
       ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
       : 99999;
     const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
     p.score += points;
-    return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null };
+    return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null, left: p.temporarilyGone || false };
   });
 
-  const leftResults = (session.leftThisRound || []).map((p) => ({
-    id: p.id, name: p.name, dist: 99999, points: 0, totalScore: p.score, pin: null, left: true
-  }));
+  const activeIds = new Set(nonSpectators.map((p) => p.id));
+  const leftResults = (session.leftThisRound || [])
+    .filter((p) => !activeIds.has(p.id))
+    .map((p) => ({
+      id: p.id, name: p.name, dist: 99999, points: 0, totalScore: p.score, pin: null, left: true
+    }));
 
-  results.sort((a, b) => b.points - a.points || a.dist - b.dist);
+  results.sort((a, b) => (a.left ? 1 : 0) - (b.left ? 1 : 0) || b.points - a.points || a.dist - b.dist);
   session.phase = 'results';
 
   const roundData = {
@@ -218,18 +231,26 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
-async function doStartGame(session, code, mode, customBounds) {
+async function doStartGame(session, code, mode, customBounds, pinCountdown) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
     session.leftThisRound = [];
+    session.usedPanoIds = new Set();
   }
+
+  if (session.countdownTimer) {
+    clearTimeout(session.countdownTimer);
+    session.countdownTimer = null;
+  }
+
+  if (pinCountdown !== undefined) session.pinCountdown = pinCountdown;
 
   const gameMode = mode || session.mode || 'weltweit';
   session.mode = gameMode;
   if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode, session.customBounds || null);
+  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, session.usedPanoIds || new Set());
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   const cb = session.customBounds;
@@ -244,6 +265,9 @@ async function doStartGame(session, code, mode, customBounds) {
     if (modeRegions) mapBounds = regionsToBounds(modeRegions);
   }
   session.mapBounds = mapBounds;
+
+  if (!session.usedPanoIds) session.usedPanoIds = new Set();
+  session.usedPanoIds.add(base.pano_id);
 
   session.round = (session.round || 0) + 1;
   session.location = { ...base, heading };
@@ -281,7 +305,9 @@ io.on('connection', (socket) => {
       phase: 'lobby',
       location: null,
       pins: {},
-      round: 0
+      round: 0,
+      usedPanoIds: new Set(),
+      pinCountdown: 30,
     };
     socket.join(code);
     socket.data.code = code;
@@ -400,11 +426,11 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async ({ mode, customBounds } = {}) => {
+  socket.on('start-game', async ({ mode, customBounds, pinCountdown } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await doStartGame(session, code, mode, customBounds);
+    await doStartGame(session, code, mode, customBounds, pinCountdown);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
@@ -440,14 +466,22 @@ io.on('connection', (socket) => {
 
     session.pins[socket.id] = { lat, lng };
 
-    // Alle non-spectator Spieler (inkl. temporarilyGone) für korrekten Zähler
     const allActive = session.players.filter((p) => !p.spectator);
     const totalPlayers = allActive.length;
     const pinCount = allActive.filter((p) => session.pins[p.id]).length;
 
     io.to(code).emit('pin-placed', { playerId: socket.id, pinCount, totalPlayers });
 
-    // Runde beenden nur wenn ALLE non-spectator Spieler (inkl. temporarilyGone) gepinnt haben
+    // Countdown starten wenn erster Pin und Countdown-Setting aktiv
+    const isFirstPin = pinCount === 1;
+    if (isFirstPin && session.pinCountdown > 0 && !session.countdownTimer) {
+      session.countdownTimer = setTimeout(() => {
+        session.countdownTimer = null;
+        finishRound(session, code);
+      }, session.pinCountdown * 1000);
+      io.to(code).emit('countdown-started', { seconds: session.pinCountdown });
+    }
+
     if (allActive.length > 0 && allActive.every((p) => session.pins[p.id])) {
       finishRound(session, code);
     }
@@ -458,11 +492,13 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
+    if (session.countdownTimer) { clearTimeout(session.countdownTimer); session.countdownTimer = null; }
     session.phase = 'lobby';
     session.pins = {};
     session.location = null;
     session.leftThisRound = [];
     session.customBounds = null;
+    session.usedPanoIds = new Set();
     io.to(code).emit('back-to-lobby');
   });
 

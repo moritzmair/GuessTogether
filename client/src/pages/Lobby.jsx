@@ -16,6 +16,8 @@ const MODES = [
 export default function Lobby({ session, onSessionUpdate }) {
   const [players, setPlayers] = useState(session.players || []);
   const [mode, setMode] = useState('weltweit');
+  const [pinCountdown, setPinCountdown] = useState(30);
+  const [countdownEnabled, setCountdownEnabled] = useState(false);
   const customMapRef = useRef(null);
   const customMapInstance = useRef(null);
 
@@ -52,6 +54,7 @@ export default function Lobby({ session, onSessionUpdate }) {
   }, [mode]);
 
   function startGame() {
+    const countdown = countdownEnabled ? pinCountdown : 0;
     if (mode === 'custom' && customMapInstance.current) {
       const b = customMapInstance.current.getBounds();
       socket.emit('start-game', {
@@ -60,9 +63,10 @@ export default function Lobby({ session, onSessionUpdate }) {
           lat: [b.getSouth(), b.getNorth()],
           lng: [b.getWest(), b.getEast()],
         },
+        pinCountdown: countdown,
       });
     } else {
-      socket.emit('start-game', { mode });
+      socket.emit('start-game', { mode, pinCountdown: countdown });
     }
   }
 
@@ -145,6 +149,31 @@ export default function Lobby({ session, onSessionUpdate }) {
                 <div ref={customMapRef} style={{ width: '100%', height: 260, borderRadius: 8, overflow: 'hidden' }} />
               </div>
             )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, background: '#1a1a2e', borderRadius: 8, padding: '10px 14px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flex: 1, margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={countdownEnabled}
+                  onChange={(e) => setCountdownEnabled(e.target.checked)}
+                  style={{ width: 'auto', margin: 0 }}
+                />
+                <span style={{ fontSize: '0.85rem', color: '#ccc' }}>⏱ Countdown nach erstem Pin</span>
+              </label>
+              {countdownEnabled && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={pinCountdown}
+                    onChange={(e) => setPinCountdown(Math.max(5, Number(e.target.value)))}
+                    style={{ width: 64, margin: 0, padding: '4px 8px', fontSize: '0.85rem', textAlign: 'center' }}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: '#888' }}>Sek.</span>
+                </div>
+              )}
+            </div>
 
             <button onClick={startGame} disabled={players.length < 1}>
               Spiel starten ({players.length} Spieler)

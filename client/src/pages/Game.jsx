@@ -25,6 +25,8 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
   const [leftNotice, setLeftNotice] = useState(null);
   const [players, setPlayers] = useState(session.players || []);
   const [pinnedIds, setPinnedIds] = useState(new Set());
+  const [countdown, setCountdown] = useState(null);
+  const countdownRef = useRef(null);
 
   const activeSeatCount = players.filter((p) => !p.spectator).length;
   const [totalPlayers, setTotalPlayers] = useState(activeSeatCount);
@@ -62,8 +64,8 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
         clickToGo: false,
         linksControl: false,
         panControl: false,
-        zoomControl: false,
-        scrollwheel: false,
+        zoomControl: true,
+        scrollwheel: true,
         motionTracking: false,
         motionTrackingControl: false,
         showRoadLabels: false,
@@ -124,19 +126,34 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
     });
     socket.on('players-updated', (updated) => {
       setPlayers(updated);
-      // inkl. temporarilyGone für korrekten Gesamtzähler
       setTotalPlayers(updated.filter((p) => !p.spectator).length);
+    });
+    socket.on('countdown-started', ({ seconds }) => {
+      setCountdown(seconds);
+      clearInterval(countdownRef.current);
+      countdownRef.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) { clearInterval(countdownRef.current); return 0; }
+          return prev - 1;
+        });
+      }, 1000);
     });
     return () => {
       socket.off('pin-placed');
       socket.off('player-left');
       socket.off('players-updated');
+      socket.off('countdown-started');
+      clearInterval(countdownRef.current);
     };
   }, []);
 
+  function normalizeLng(lng) {
+    return ((lng + 180) % 360 + 360) % 360 - 180;
+  }
+
   function submitPin() {
     if (!pin) return;
-    socket.emit('place-pin', { lat: pin.lat, lng: pin.lng });
+    socket.emit('place-pin', { lat: pin.lat, lng: normalizeLng(pin.lng) });
     submittedRef.current = true;
     setSubmitted(true);
   }
@@ -164,6 +181,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 10
         }}>
           🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
+          {countdown !== null && countdown > 0 && <span style={{ marginLeft: 8, color: '#facc15' }}>⏱ {countdown}s</span>}
         </div>
         <div style={{
           position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.75)',
@@ -247,11 +265,23 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
             fontSize: '0.85rem', color: '#111', fontWeight: 'bold', textAlign: 'center'
           }}>
             ✅ Pin gesetzt – warte auf andere ({pinCount}/{totalPlayers})
+            {countdown !== null && countdown > 0 && (
+              <span style={{ marginLeft: 8 }}>⏱ {countdown}s</span>
+            )}
           </div>
         ) : (
-          <button onClick={submitPin} disabled={!pin} style={{ margin: 0, width: '100%', opacity: pin ? 1 : 0.5 }}>
-            📍 Pin bestätigen
-          </button>
+          <div>
+            {countdown !== null && countdown > 0 && (
+              <div style={{
+                textAlign: 'center', fontSize: '0.8rem', color: '#facc15', marginBottom: 6
+              }}>
+                ⏱ Countdown: {countdown}s
+              </div>
+            )}
+            <button onClick={submitPin} disabled={!pin} style={{ margin: 0, width: '100%', opacity: pin ? 1 : 0.5 }}>
+              📍 Pin bestätigen
+            </button>
+          </div>
         )}
       </div>
     </div>
