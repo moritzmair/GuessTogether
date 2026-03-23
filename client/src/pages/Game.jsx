@@ -203,8 +203,20 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           }}>
             🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
           </div>
-          {countdown !== null && countdown > 0 && <span style={{ marginLeft: 8, color: '#facc15' }}>⏱ {countdown}s</span>}
         </div>
+
+        {countdown !== null && countdown > 0 && (
+          <div style={{
+            position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+            background: countdown <= 5 ? 'rgba(220,50,50,0.93)' : 'rgba(250,204,21,0.93)',
+            borderRadius: 10, padding: '6px 28px',
+            fontSize: '1.6rem', fontWeight: 'bold', color: '#111',
+            zIndex: 20, textAlign: 'center', boxShadow: '0 2px 16px rgba(0,0,0,0.5)',
+            minWidth: 120, letterSpacing: 1,
+          }}>
+            ⏱ {countdown}s
+          </div>
+        )}
 
         {/* Bestätigungs-Dialog */}
         {showAbortConfirm && (
@@ -297,6 +309,19 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           </div>
         )}
 
+        {countdown !== null && countdown > 0 && (
+          <div style={{
+            position: 'absolute', top: isSpectator ? 46 : 10, left: '50%', transform: 'translateX(-50%)',
+            background: countdown <= 5 ? 'rgba(220,50,50,0.93)' : 'rgba(250,204,21,0.93)',
+            borderRadius: 10, padding: '8px 28px',
+            fontSize: '1.8rem', fontWeight: 'bold', color: '#111',
+            zIndex: 1003, textAlign: 'center', boxShadow: '0 2px 16px rgba(0,0,0,0.5)',
+            minWidth: 130, letterSpacing: 1,
+          }}>
+            ⏱ {countdown}s
+          </div>
+        )}
+
         {leftNotice && (
           <div style={{
             position: 'absolute', top: 8, right: 8, background: 'rgba(220,50,50,0.85)',
@@ -326,23 +351,11 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
             fontSize: '0.85rem', color: '#111', fontWeight: 'bold', textAlign: 'center'
           }}>
             ✅ Pin gesetzt – warte auf andere ({pinCount}/{totalPlayers})
-            {countdown !== null && countdown > 0 && (
-              <span style={{ marginLeft: 8 }}>⏱ {countdown}s</span>
-            )}
           </div>
         ) : (
-          <div>
-            {countdown !== null && countdown > 0 && (
-              <div style={{
-                textAlign: 'center', fontSize: '0.8rem', color: '#facc15', marginBottom: 6
-              }}>
-                ⏱ Countdown: {countdown}s
-              </div>
-            )}
-            <button onClick={submitPin} disabled={!pin} style={{ margin: 0, width: '100%', opacity: pin ? 1 : 0.5 }}>
-              📍 Pin bestätigen
-            </button>
-          </div>
+          <button onClick={submitPin} disabled={!pin} style={{ margin: 0, width: '100%', opacity: pin ? 1 : 0.5 }}>
+            📍 Pin bestätigen
+          </button>
         )}
       </div>
     </div>

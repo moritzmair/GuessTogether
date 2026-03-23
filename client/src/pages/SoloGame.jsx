@@ -369,10 +369,14 @@ export default function SoloGame({ onBack }) {
           {/* Info-Banner */}
           <div style={{
             background: '#1a1a2e', borderRadius: 10, padding: '12px 16px', marginBottom: 20,
-            fontSize: '0.85rem', color: '#aaa', lineHeight: 1.6,
+            fontSize: '0.85rem', color: '#aaa', lineHeight: 1.7,
           }}>
             <span style={{ color: '#4a9eff', fontWeight: 'bold' }}>{TOTAL_ROUNDS} Runden</span>
-            {' '}· Street View auf dem Bildschirm · Pin auf der Karte setzen · Punkte nach Entfernung
+            {' '}· Street View · Pin auf der Karte setzen
+            <br />
+            <span style={{ fontSize: '0.78rem' }}>
+              📊 <strong style={{ color: '#bbb' }}>Punkte:</strong> 10.000 ÷ (1 + km/10) &nbsp;·&nbsp; 0 km → 10.000 &nbsp;·&nbsp; 10 km → ~5.000 &nbsp;·&nbsp; 100 km → ~1.000
+            </span>
           </div>
 
           <button

@@ -212,6 +212,15 @@ export default function Lobby({ session, onSessionUpdate }) {
               )}
             </div>
 
+            <div style={{
+              background: '#1a1a2e', borderRadius: 8, padding: '10px 14px', marginBottom: 12,
+              fontSize: '0.78rem', color: '#888', lineHeight: 1.7,
+            }}>
+              📊 <strong style={{ color: '#bbb' }}>Punkteformel:</strong> 10.000 ÷ (1 + km/10)
+              <br />
+              <span>0 km → 10.000 &nbsp;·&nbsp; 10 km → ~5.000 &nbsp;·&nbsp; 100 km → ~1.000 &nbsp;·&nbsp; kein Pin → 0</span>
+            </div>
+
             <button onClick={startGame} disabled={players.length < 1}>
               Spiel starten ({players.length} Spieler)
             </button>
