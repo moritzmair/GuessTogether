@@ -119,14 +119,6 @@ const REGIONS_EUROPA = [
   { lat: [35, 42], lng: [20, 28]  },  // Griechenland
 ];
 
-const REGIONS_DARMSTADT = [
-  { lat: [49.82, 49.93], lng: [8.57, 8.72] },
-];
-
-const REGIONS_WIESBADEN = [
-  { lat: [50.02, 50.12], lng: [8.18, 8.32] },
-];
-
 function regionsToBounds(regions) {
   const minLat = Math.min(...regions.map((r) => r.lat[0]));
   const maxLat = Math.max(...regions.map((r) => r.lat[1]));
@@ -134,6 +126,34 @@ function regionsToBounds(regions) {
   const maxLng = Math.max(...regions.map((r) => r.lng[1]));
   return [[minLat, minLng], [maxLat, maxLng]];
 }
+
+const FAMOUS_PLACES = [
+  [48.8584, 2.2945],   [41.8902, 12.4922],  [41.4036, 2.1744],   [51.5007, -0.1246],
+  [52.5163, 13.3777],  [37.9715, 23.7257],  [37.1760, -3.5881],  [48.8606, 2.3376],
+  [48.8530, 2.3499],   [48.8738, 2.2950],   [41.9009, 12.4833],  [41.8986, 12.4769],
+  [41.9022, 12.4539],  [50.9413, 6.9583],   [47.5575, 10.7498],  [50.0910, 14.4010],
+  [50.0865, 14.4114],  [37.8199, -122.4783],[40.6892, -74.0445], [40.7580, -73.9855],
+  [40.7484, -73.9856], [34.1341, -118.3215],[36.1147, -115.1728],[43.0799, -79.0747],
+  [-13.1631, -72.5450],[-22.9519, -43.2105],[-25.6953, -54.4367],[20.6843, -88.5678],
+  [19.6925, -98.8438], [35.6586, 139.7454], [35.6595, 139.7004], [34.9671, 135.7727],
+  [35.3606, 138.7274], [31.2400, 121.4900], [40.4319, 116.5704], [39.9163, 116.3972],
+  [25.1972, 55.2744],  [25.1124, 55.1390],  [30.3285, 35.4444],  [29.9792, 31.1342],
+  [27.1751, 78.0421],  [28.6129, 77.2295],  [-33.8568, 151.2153],[-33.8523, 151.2108],
+  [36.4618, 25.3753],  [51.1789, -1.8262],  [55.9486, -3.1999],  [51.5014, -0.1419],
+  [51.5055, -0.0754],  [52.3676, 4.9041],   [51.8833, 4.6356],   [43.7396, 7.4278],
+  [43.7230, 10.3966],  [45.4341, 12.3388],  [43.7730, 11.2560],  [42.6507, 18.0944],
+  [39.7217, 21.6306],  [47.5622, 13.6493],  [47.4963, 19.0398],  [55.7539, 37.6208],
+  [59.9401, 30.3288],  [41.0086, 28.9802],  [41.0054, 28.9768],  [-33.9628, 18.4098],
+  [-17.9243, 25.8572], [13.4125, 103.8667], [-8.6215, 115.0865], [1.2839, 103.8607],
+  [3.1579, 101.7116],  [38.6431, 34.8289],  [52.9715, -9.4309],  [55.2308, -6.5116],
+  [44.1461, 9.6439],   [48.6360, -1.5115],  [48.0793, 7.3585],   [43.5081, 16.4402],
+  [50.4501, 30.5234],  [46.9480, 7.4474],   [47.3769, 8.5417],   [48.2082, 16.3738],
+  [47.8099, 13.0550],  [48.1351, 11.5820],  [53.5753, 10.0153],  [52.5170, 13.3889],
+  [43.2965, 5.3698],   [43.6965, 7.2705],   [37.3891, -5.9845],  [40.4153, -3.6893],
+  [38.6916, -9.2160],  [41.1579, -8.6291],  [53.3498, -6.2603],  [55.6761, 12.5683],
+  [59.9139, 10.7522],  [60.1699, 24.9384],  [26.9239, 75.8267],  [-25.3444, 131.0369],
+  [46.0207, 14.5112],  [22.3193, 114.1694], [1.3521, 103.8198],  [33.7490, -84.3880],
+];
 
 const CITIES = [
   [40.7128,-74.006],[51.5074,-0.1278],[48.8566,2.3522],[52.52,13.405],[41.9028,12.4964],
@@ -150,6 +170,18 @@ const CITIES = [
 async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', usedPanoIds = new Set(), maxTries = 150) {
   // 'outdoor' und 'google_only' schließen Indoor-Panoramen per API-Source-Parameter aus
   const source = (panoramaFilter === 'outdoor' || panoramaFilter === 'google_only') ? 'outdoor' : 'default';
+
+  if (mode === 'beruehmt') {
+    for (let i = 0; i < maxTries; i++) {
+      const [seedLat, seedLng] = FAMOUS_PLACES[Math.floor(Math.random() * FAMOUS_PLACES.length)];
+      const meta = await fetchNearestPanorama(seedLat, seedLng, 3000, source);
+      if (meta.status !== 'OK' || !meta.pano_id) continue;
+      if (usedPanoIds.has(meta.pano_id)) continue;
+      console.log(`[beruehmt] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+      return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
+    }
+    throw new Error('Kein Street View gefunden');
+  }
 
   if (mode === 'grossstaedte') {
     for (let i = 0; i < maxTries; i++) {
@@ -171,8 +203,6 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
 
   const regions = mode === 'custom' && customBounds ? [customBounds]
     : mode === 'europa' ? REGIONS_EUROPA
-    : mode === 'darmstadt' ? REGIONS_DARMSTADT
-    : mode === 'wiesbaden' ? REGIONS_WIESBADEN
     : REGIONS_WELTWEIT;
   for (let i = 0; i < maxTries; i++) {
     const r = regions[Math.floor(Math.random() * regions.length)];
@@ -273,10 +303,7 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   if (gameMode === 'custom' && cb) {
     mapBounds = [[cb.lat[0], cb.lng[0]], [cb.lat[1], cb.lng[1]]];
   } else {
-    const modeRegions = gameMode === 'europa' ? REGIONS_EUROPA
-      : gameMode === 'darmstadt' ? REGIONS_DARMSTADT
-      : gameMode === 'wiesbaden' ? REGIONS_WIESBADEN
-      : null;
+    const modeRegions = gameMode === 'europa' ? REGIONS_EUROPA : null;
     if (modeRegions) mapBounds = regionsToBounds(modeRegions);
   }
   session.mapBounds = mapBounds;
@@ -319,12 +346,8 @@ app.get('/api/solo/start-round', async (req, res) => {
     let mapBounds = null;
     if (mode === 'custom' && customBounds) {
       mapBounds = [[customBounds.lat[0], customBounds.lng[0]], [customBounds.lat[1], customBounds.lng[1]]];
-    } else {
-      const modeRegions = mode === 'europa' ? REGIONS_EUROPA
-        : mode === 'darmstadt' ? REGIONS_DARMSTADT
-        : mode === 'wiesbaden' ? REGIONS_WIESBADEN
-        : null;
-      if (modeRegions) mapBounds = regionsToBounds(modeRegions);
+    } else if (mode === 'europa') {
+      mapBounds = regionsToBounds(REGIONS_EUROPA);
     }
 
     res.json({

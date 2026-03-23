@@ -81,12 +81,9 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
       <div ref={mapRef} style={{ flex: '0 0 40%' }} />
 
       <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-        <h2 style={{ textAlign: 'center', marginBottom: 4 }}>
+        <h2 style={{ textAlign: 'center', marginBottom: 16 }}>
           📍 Lösung: {location.label}
         </h2>
-        <p style={{ textAlign: 'center', color: '#aaa', fontSize: '0.8rem', marginBottom: 16 }}>
-          ({location.lat.toFixed(4)}, {location.lng.toFixed(4)})
-        </p>
 
         <h2 style={{ marginBottom: 12 }}>🏆 Rangliste</h2>
         <ul style={{ listStyle: 'none' }}>

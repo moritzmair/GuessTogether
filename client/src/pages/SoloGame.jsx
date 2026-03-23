@@ -6,8 +6,7 @@ const MODES = [
   { id: 'weltweit',    label: '🌍 Weltweit' },
   { id: 'europa',      label: '🇪🇺 Europa' },
   { id: 'grossstaedte',label: '🏙️ Großstädte' },
-  { id: 'darmstadt',   label: '🦔 Darmstadt' },
-  { id: 'wiesbaden',   label: '🏛️ Wiesbaden' },
+  { id: 'beruehmt',   label: '🏛️ Berühmte Orte' },
   { id: 'custom',      label: '✏️ Custom' },
 ];
 
@@ -123,8 +122,8 @@ export default function SoloGame({ onBack }) {
         clickToGo: false,
         linksControl: false,
         panControl: false,
-        zoomControl: false,
-        scrollwheel: false,
+        zoomControl: true,
+        scrollwheel: true,
         motionTracking: false,
         motionTrackingControl: false,
         showRoadLabels: false,
@@ -491,12 +490,9 @@ export default function SoloGame({ onBack }) {
 
         {/* Scrollbarer Inhalt */}
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          <h2 style={{ textAlign: 'center', marginBottom: 4 }}>
+          <h2 style={{ textAlign: 'center', marginBottom: 16 }}>
             📍 {loc.label}
           </h2>
-          <p style={{ textAlign: 'center', color: '#aaa', fontSize: '0.78rem', marginBottom: 16 }}>
-            ({loc.lat.toFixed(4)}, {loc.lng.toFixed(4)})
-          </p>
 
           {/* Score-Box */}
           <div style={{

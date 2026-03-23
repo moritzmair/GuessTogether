@@ -8,8 +8,7 @@ const MODES = [
   { id: 'weltweit', label: '🌍 Weltweit' },
   { id: 'europa', label: '🇪🇺 Europa' },
   { id: 'grossstaedte', label: '🏙️ Großstädte' },
-  { id: 'darmstadt', label: '🦔 Darmstadt' },
-  { id: 'wiesbaden', label: '🏛️ Wiesbaden' },
+  { id: 'beruehmt', label: '🏛️ Berühmte Orte' },
   { id: 'custom', label: '✏️ Custom' },
 ];
 

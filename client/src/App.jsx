@@ -13,6 +13,8 @@ function sessionMapKey(s) {
   return `${s.code}:${s.isHost ? 'host' : s.name}`;
 }
 
+const SESSION_MAX_AGE_MS = 30 * 60 * 1000; // 30 Minuten
+
 function saveSession(session) {
   if (!session) return;
   try {
@@ -22,6 +24,7 @@ function saveSession(session) {
       name: session.name,
       isHost: !!session.isHost,
       hostSecret: session.hostSecret,
+      savedAt: Date.now(),
     };
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(map));
   } catch (_) {}
@@ -37,8 +40,20 @@ function clearSession(session) {
 }
 
 function loadAllSessions() {
-  try { return JSON.parse(localStorage.getItem(SESSIONS_KEY) || '{}'); }
-  catch (_) { return {}; }
+  try {
+    const map = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '{}');
+    const now = Date.now();
+    // Abgelaufene Sessions direkt bereinigen
+    let changed = false;
+    for (const key of Object.keys(map)) {
+      if (map[key].savedAt && now - map[key].savedAt > SESSION_MAX_AGE_MS) {
+        delete map[key];
+        changed = true;
+      }
+    }
+    if (changed) localStorage.setItem(SESSIONS_KEY, JSON.stringify(map));
+    return map;
+  } catch (_) { return {}; }
 }
 
 export default function App() {
