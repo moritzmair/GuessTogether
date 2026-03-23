@@ -4,6 +4,7 @@ import Lobby from './pages/Lobby.jsx';
 import Game from './pages/Game.jsx';
 import Results from './pages/Results.jsx';
 import Summary from './pages/Summary.jsx';
+import SoloGame from './pages/SoloGame.jsx';
 import socket from './socket.js';
 
 const SESSIONS_KEY = 'gg_sessions';
@@ -168,6 +169,7 @@ export default function App() {
       <Home
         savedSessions={savedSessions}
         onRejoin={handleRejoin}
+        onSolo={() => setPage('soloGame')}
         onJoined={(s) => {
           setSession(s);
           setIsSpectator(s.spectator || false);
@@ -181,6 +183,9 @@ export default function App() {
         }}
       />
     );
+
+  if (page === 'soloGame')
+    return <SoloGame onBack={() => setPage('home')} />;
 
   if (page === 'lobby')
     return <Lobby session={session} onSessionUpdate={(s) => setSession(s)} />;

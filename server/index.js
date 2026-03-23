@@ -62,9 +62,10 @@ function bearing(lat1, lng1, lat2, lng2) {
 }
 
 // Street View Metadata abrufen – sucht Panorama im gegebenen Radius (in Metern)
-function fetchNearestPanorama(lat, lng, radiusMeters = 50000) {
+// source: 'default' (alle) | 'outdoor' (kein Indoor)
+function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
   return new Promise((resolve) => {
-    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&key=${MAPS_KEY}`;
+    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&source=${source}&key=${MAPS_KEY}`;
     https.get(url, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
@@ -145,16 +146,24 @@ const CITIES = [
   [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
 ];
 
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, usedPanoIds = new Set(), maxTries = 150) {
+// panoramaFilter: 'all' | 'outdoor' | 'google_only'
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', usedPanoIds = new Set(), maxTries = 150) {
+  // 'outdoor' und 'google_only' schließen Indoor-Panoramen per API-Source-Parameter aus
+  const source = (panoramaFilter === 'outdoor' || panoramaFilter === 'google_only') ? 'outdoor' : 'default';
+
   if (mode === 'grossstaedte') {
     for (let i = 0; i < maxTries; i++) {
       const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
       const jLat = seedLat + (Math.random() - 0.5) * 0.05;
       const jLng = seedLng + (Math.random() - 0.5) * 0.05;
-      const meta = await fetchNearestPanorama(jLat, jLng, 2000);
+      const meta = await fetchNearestPanorama(jLat, jLng, 2000, source);
       if (meta.status !== 'OK' || !meta.pano_id) continue;
+      if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
+        console.log(`[grossstaedte] Übersprungen (nicht Google): "${meta.copyright}"`);
+        continue;
+      }
       if (usedPanoIds.has(meta.pano_id)) continue;
-      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
       return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
     }
     throw new Error('Kein Street View gefunden');
@@ -169,16 +178,20 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
     const r = regions[Math.floor(Math.random() * regions.length)];
     const seedLat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
     const seedLng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
-    const meta = await fetchNearestPanorama(seedLat, seedLng, 10000);
+    const meta = await fetchNearestPanorama(seedLat, seedLng, 10000, source);
     if (meta.status !== 'OK' || !meta.pano_id) {
       console.log(`[${mode}] Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
+      continue;
+    }
+    if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
+      console.log(`[${mode}] Versuch ${i + 1}: Übersprungen (nicht Google): "${meta.copyright}"`);
       continue;
     }
     if (usedPanoIds.has(meta.pano_id)) {
       console.log(`[${mode}] Versuch ${i + 1}: Panorama bereits benutzt, überspringe`);
       continue;
     }
-    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
     return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
   }
   throw new Error('Kein Street View gefunden');
@@ -231,7 +244,7 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
-async function doStartGame(session, code, mode, customBounds, pinCountdown) {
+async function doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
@@ -247,10 +260,12 @@ async function doStartGame(session, code, mode, customBounds, pinCountdown) {
   if (pinCountdown !== undefined) session.pinCountdown = pinCountdown;
 
   const gameMode = mode || session.mode || 'weltweit';
+  const filter = panoramaFilter || session.panoramaFilter || 'all';
   session.mode = gameMode;
+  session.panoramaFilter = filter;
   if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, session.usedPanoIds || new Set());
+  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, filter, session.usedPanoIds || new Set());
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   const cb = session.customBounds;
@@ -288,6 +303,41 @@ async function doStartGame(session, code, mode, customBounds, pinCountdown) {
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 app.get('/api/maps-key', (_, res) => res.json({ key: MAPS_KEY }));
+
+// Solo-Modus: Neue Runde starten – gibt Panorama-Daten zurück ohne Session
+app.get('/api/solo/start-round', async (req, res) => {
+  const mode = req.query.mode || 'weltweit';
+  const panoramaFilter = req.query.panoramaFilter || 'all';
+  let customBounds = null;
+  if (req.query.customBounds) {
+    try { customBounds = JSON.parse(req.query.customBounds); } catch (_) {}
+  }
+  try {
+    const base = await randomStreetViewLocation(mode, customBounds, panoramaFilter);
+    const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
+
+    let mapBounds = null;
+    if (mode === 'custom' && customBounds) {
+      mapBounds = [[customBounds.lat[0], customBounds.lng[0]], [customBounds.lat[1], customBounds.lng[1]]];
+    } else {
+      const modeRegions = mode === 'europa' ? REGIONS_EUROPA
+        : mode === 'darmstadt' ? REGIONS_DARMSTADT
+        : mode === 'wiesbaden' ? REGIONS_WIESBADEN
+        : null;
+      if (modeRegions) mapBounds = regionsToBounds(modeRegions);
+    }
+
+    res.json({
+      panoId: base.pano_id,
+      heading,
+      location: { lat: base.lat, lng: base.lng, label: base.label },
+      mapBounds,
+    });
+  } catch (err) {
+    console.error('[solo] Fehler:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
@@ -426,11 +476,11 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async ({ mode, customBounds, pinCountdown } = {}) => {
+  socket.on('start-game', async ({ mode, customBounds, panoramaFilter, pinCountdown } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await doStartGame(session, code, mode, customBounds, pinCountdown);
+    await doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
@@ -487,7 +537,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Zurück zur Lobby (nur Host)
+  // Zurück zur Lobby (nur Host) – setzt Spiel vollständig zurück
   socket.on('back-to-lobby', () => {
     const code = socket.data.code;
     const session = sessions[code];
@@ -496,8 +546,10 @@ io.on('connection', (socket) => {
     session.phase = 'lobby';
     session.pins = {};
     session.location = null;
+    session.round = 0;
     session.leftThisRound = [];
     session.customBounds = null;
+    session.players.forEach((p) => { p.score = 0; p.spectator = false; p.temporarilyGone = false; });
     session.usedPanoIds = new Set();
     io.to(code).emit('back-to-lobby');
   });
