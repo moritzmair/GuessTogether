@@ -24,6 +24,7 @@ export default function Lobby({ session, onSessionUpdate }) {
   const [panoramaFilter, setPanoramaFilter] = useState('all');
   const [pinCountdown, setPinCountdown] = useState(30);
   const [countdownEnabled, setCountdownEnabled] = useState(false);
+  const [startError, setStartError] = useState(null);
   const customMapRef = useRef(null);
   const customMapInstance = useRef(null);
 
@@ -34,7 +35,13 @@ export default function Lobby({ session, onSessionUpdate }) {
       setPlayers(updatedPlayers);
       onSessionUpdate({ ...session, players: updatedPlayers });
     });
-    return () => { socket.off('players-updated'); };
+    // Rundenstart fehlgeschlagen (Google-Fehler, kein Panorama gefunden) –
+    // die Session bleibt in der Lobby, der Host kann es erneut versuchen.
+    socket.on('game-error', ({ message }) => setStartError(message));
+    return () => {
+      socket.off('players-updated');
+      socket.off('game-error');
+    };
   }, []);
 
   useEffect(() => {
@@ -60,6 +67,7 @@ export default function Lobby({ session, onSessionUpdate }) {
   }, [mode]);
 
   function startGame() {
+    setStartError(null);
     const countdown = countdownEnabled ? pinCountdown : 0;
     if (mode === 'custom' && customMapInstance.current) {
       const b = customMapInstance.current.getBounds();
@@ -220,6 +228,16 @@ export default function Lobby({ session, onSessionUpdate }) {
               <br />
               <span>0 km → 10.000 &nbsp;·&nbsp; 10 km → ~5.000 &nbsp;·&nbsp; 100 km → ~1.000 &nbsp;·&nbsp; kein Pin → 0</span>
             </div>
+
+            {startError && (
+              <div style={{
+                background: 'rgba(248,113,113,0.12)', border: '1px solid #f87171',
+                borderRadius: 8, padding: '10px 14px', marginBottom: 12,
+                fontSize: '0.8rem', color: '#f87171', lineHeight: 1.5,
+              }}>
+                ⚠️ Rundenstart fehlgeschlagen<br />{startError}
+              </div>
+            )}
 
             <button onClick={startGame} disabled={players.length < 1}>
               Spiel starten ({players.length} Spieler)

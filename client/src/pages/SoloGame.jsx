@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
 
 const MODES = [
   { id: 'weltweit',    label: '🌍 Weltweit' },
@@ -47,7 +48,7 @@ export default function SoloGame({ onBack }) {
   const [history, setHistory]               = useState([]);
   const [currentRound, setCurrentRound]     = useState(null);
   const [pin, setPin]                       = useState(null);
-  const [panoError, setPanoError]           = useState(false);
+  const [panoError, setPanoError]           = useState(null);
   const [loadError, setLoadError]           = useState(null);
   const [roundResult, setRoundResult]       = useState(null);
   // Custom-Bounds werden beim Start einmalig gespeichert, damit alle Folgerunden
@@ -93,7 +94,7 @@ export default function SoloGame({ onBack }) {
   useEffect(() => {
     if (phase !== 'playing' || !currentRound || !panoRef.current) return;
     let cancelled = false;
-    setPanoError(false);
+    setPanoError(null);
 
     if (svInstanceRef.current) {
       svInstanceRef.current.setVisible(false);
@@ -101,20 +102,18 @@ export default function SoloGame({ onBack }) {
       if (panoRef.current) panoRef.current.innerHTML = '';
     }
 
+    const unsubscribe = onGoogleAuthFailure((msg) => { if (!cancelled) setPanoError(msg); });
+
     (async () => {
-      if (!window.google?.maps?.StreetViewPanorama) {
-        const { key } = await fetch('/api/maps-key').then((r) => r.json());
-        await new Promise((resolve, reject) => {
-          const s = document.createElement('script');
-          s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&callback=Function.prototype`;
-          s.async = true;
-          s.onload = resolve;
-          s.onerror = reject;
-          document.head.appendChild(s);
-        });
+      let maps;
+      try {
+        maps = await loadGoogleMaps();
+      } catch (err) {
+        if (!cancelled) setPanoError(err.message);
+        return;
       }
       if (cancelled) return;
-      const sv = new window.google.maps.StreetViewPanorama(panoRef.current, {
+      const sv = new maps.StreetViewPanorama(panoRef.current, {
         pano: currentRound.panoId,
         pov: { heading: currentRound.heading, pitch: 0 },
         zoom: 1,
@@ -130,10 +129,12 @@ export default function SoloGame({ onBack }) {
       });
       svInstanceRef.current = sv;
       sv.addListener('status_changed', () => {
-        if (!cancelled && sv.getStatus() !== 'OK') setPanoError(true);
+        if (!cancelled && sv.getStatus() !== 'OK') {
+          setPanoError(`Street View nicht verfügbar für dieses Panorama (${sv.getStatus()})`);
+        }
       });
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; unsubscribe(); };
   }, [phase, currentRound]);
 
   // Spielkarte initialisieren
@@ -425,10 +426,14 @@ export default function SoloGame({ onBack }) {
           <div ref={panoRef} style={{ width: '100%', height: '100%' }} />
           {panoError && (
             <div style={{
-              position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-              justifyContent: 'center', color: '#fff', fontSize: '1rem', background: '#111',
+              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 8,
+              alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center',
+              color: '#fff', background: '#111',
             }}>
-              ⚠️ Street View nicht verfügbar für diesen Standort
+              <div style={{ fontSize: '1rem' }}>⚠️ Street View konnte nicht geladen werden</div>
+              <div style={{ fontSize: '0.8rem', color: '#f87171', maxWidth: 560, lineHeight: 1.5 }}>
+                {panoError}
+              </div>
             </div>
           )}
 

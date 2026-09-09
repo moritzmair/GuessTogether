@@ -5,16 +5,58 @@ const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
-const MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+// Zwei Keys, zwei Einsatzorte:
+//   MAPS_KEY    – Backend, ruft die Street View Metadata API auf. Verlaesst den Server nie,
+//                 laesst sich daher in der Cloud Console per IP-Adresse einschraenken.
+//   BROWSER_KEY – wird ueber /api/maps-key an den Client geliefert und laedt die Maps
+//                 JavaScript API. Im Browser zwangslaeufig oeffentlich, gehoert deshalb
+//                 per HTTP-Referrer + API-Restriktion auf die Maps JavaScript API begrenzt.
+// Ohne GOOGLE_MAPS_BROWSER_KEY faellt der Client auf den Server-Key zurueck (Dev-Komfort).
+const MAPS_KEY = (process.env.GOOGLE_MAPS_API_KEY || '').trim();
+const BROWSER_KEY = (process.env.GOOGLE_MAPS_BROWSER_KEY || '').trim() || MAPS_KEY;
 
-function checkApiKey() {
-  return new Promise((resolve, reject) => {
-    if (!MAPS_KEY) {
-      reject(new Error('GOOGLE_MAPS_API_KEY fehlt in server/.env'));
-      return;
+// Antworten der Google Maps Platform, die sich durch Wiederholen nicht beheben lassen:
+// Key ungueltig, API nicht aktiviert, Billing fehlt, Referrer/IP blockiert.
+class GoogleApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = 'GoogleApiError';
+    this.status = status;
+  }
+}
+
+const SETUP_HINT = [
+  'Im Google-Cloud-Projekt des Keys pruefen:',
+  '  1. Abrechnungskonto verknuepft     https://console.cloud.google.com/billing',
+  '  2. "Street View Static API" aktiv  – liefert die Panorama-Metadaten (Server)',
+  '  3. "Maps JavaScript API" aktiv     – zeigt das Panorama (Browser)',
+  '  4. Key-Restriktionen erlauben genau diese APIs und diesen Host',
+].join('\n');
+
+// Beim Start einmal echt gegen die API sprechen. Ohne diese Probe faellt ein toter Key
+// erst in der ersten Runde auf – dort aber als "Kein Street View gefunden", nach 40
+// vergeblichen Requests und ohne Googles eigentliche Fehlermeldung.
+async function checkApiKey() {
+  if (!MAPS_KEY) {
+    throw new Error(`GOOGLE_MAPS_API_KEY fehlt in server/.env\n\n${SETUP_HINT}`);
+  }
+
+  let meta;
+  try {
+    meta = await fetchNearestPanorama(48.8584, 2.2945, 1000); // Eiffelturm: Panorama garantiert
+  } catch (err) {
+    if (err instanceof GoogleApiError) {
+      throw new Error(`Google lehnt den API-Key ab (${err.status}):\n  ${err.message}\n\n${SETUP_HINT}`);
     }
-    resolve();
-  });
+    throw err;
+  }
+
+  if (meta.status !== 'OK') {
+    // Netzwerkproblem o. ae. – kein Grund den Server nicht zu starten
+    console.warn(`[api] Probe-Request lieferte "${meta.status}" – Server startet trotzdem.`);
+    return;
+  }
+  console.log(`[api] Google Maps OK (Street View Metadata erreichbar)${BROWSER_KEY === MAPS_KEY ? ' – Hinweis: Browser nutzt denselben Key, siehe GOOGLE_MAPS_BROWSER_KEY' : ''}`);
 }
 
 const app = express();
@@ -64,6 +106,8 @@ function bearing(lat1, lng1, lat2, lng2) {
 // Street View Metadata abrufen – sucht Panorama im gegebenen Radius (in Metern)
 // source: 'default' (alle) | 'outdoor' (kein Indoor)
 // Bei OVER_QUERY_LIMIT: kurz warten und einmal wiederholen
+// Wirft GoogleApiError, wenn Google die Anfrage grundsaetzlich ablehnt – solche Fehler
+// gelten fuer jede weitere Anfrage genauso, Weitersuchen waere reine Verschwendung.
 async function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
   const doFetch = () => new Promise((resolve) => {
     const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&source=${source}&key=${MAPS_KEY}`;
@@ -77,20 +121,37 @@ async function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'de
     }).on('error', () => resolve({ status: 'ERROR' }));
   });
 
-  const result = await doFetch();
+  let result = await doFetch();
   if (result.status === 'OVER_QUERY_LIMIT') {
     console.warn('[api] OVER_QUERY_LIMIT – warte 1s');
     await new Promise((r) => setTimeout(r, 1000));
-    return doFetch();
+    result = await doFetch();
+  }
+
+  // REQUEST_DENIED: Key/Billing/API-Aktivierung/Restriktion.
+  // INVALID_REQUEST: fehlerhafte Parameter – bei festen Parametern ein Bug, kein Zufall.
+  // OVER_QUERY_LIMIT nach dem Retry: Kontingent erschoepft, weitere Requests helfen nicht.
+  if (result.status === 'REQUEST_DENIED' || result.status === 'INVALID_REQUEST' || result.status === 'OVER_QUERY_LIMIT') {
+    throw new GoogleApiError(
+      result.status,
+      result.error_message || `Google Maps Platform lehnt die Anfrage ab (${result.status})`
+    );
   }
   return result;
 }
 
 // Fahrtrichtung ermitteln: bricht nach erstem Treffer ab (spart API-Calls)
+// Die Blickrichtung ist Kosmetik – schlaegt die Abfrage fehl, startet die Runde trotzdem.
 async function fetchAutoHeading(lat, lng, pano_id) {
   const offsets = [[0.001, 0], [0, 0.001], [-0.001, 0], [0, -0.001]];
   for (const [dlat, dlng] of offsets) {
-    const meta2 = await fetchNearestPanorama(lat + dlat, lng + dlng, 100);
+    let meta2;
+    try {
+      meta2 = await fetchNearestPanorama(lat + dlat, lng + dlng, 100);
+    } catch (err) {
+      console.warn(`[api] Heading-Abfrage fehlgeschlagen (${err.message}) – nutze 0°`);
+      return 0;
+    }
     if (meta2.status === 'OK' && meta2.pano_id !== pano_id) {
       return Math.round(bearing(lat, lng, meta2.location.lat, meta2.location.lng));
     }
@@ -187,7 +248,7 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
       console.log(`[beruehmt] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
       return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
     }
-    throw new Error('Kein Street View gefunden');
+    throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
   }
 
   if (mode === 'grossstaedte') {
@@ -205,7 +266,7 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
       console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
       return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
     }
-    throw new Error('Kein Street View gefunden');
+    throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
   }
 
   const regions = mode === 'custom' && customBounds ? [customBounds]
@@ -231,7 +292,7 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
     console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
     return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
   }
-  throw new Error('Kein Street View gefunden');
+  throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
 }
 
 // Runde abschließen
@@ -334,9 +395,33 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   console.log('game started:', code, base.label);
 }
 
+// doStartGame kann scheitern (Google lehnt ab, kein Panorama gefunden). Ohne diesen
+// Wrapper wurde daraus eine unbehandelte Promise-Rejection und die Lobby wartete stumm.
+async function startGameSafe(session, code, mode, customBounds, panoramaFilter, pinCountdown) {
+  try {
+    await doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown);
+  } catch (err) {
+    const isGoogle = err instanceof GoogleApiError;
+    if (isGoogle) console.error(`[game] Google Maps ${err.status}: ${err.message}\n${SETUP_HINT}`);
+    else console.error('[game] Rundenstart fehlgeschlagen:', err.message);
+
+    // Session bleibt in der Lobby, damit der Host es erneut versuchen kann
+    session.phase = 'lobby';
+    io.to(code).emit('game-error', {
+      message: isGoogle
+        ? `Google Maps lehnt die Anfrage ab (${err.status}): ${err.message}`
+        : err.message,
+      code: isGoogle ? err.status : 'NO_PANORAMA',
+    });
+  }
+}
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
-app.get('/api/maps-key', (_, res) => res.json({ key: MAPS_KEY }));
+// Der Browser-Key ist oeffentlich – er steht zwangslaeufig im ausgelieferten Frontend.
+// Geschuetzt wird er nicht durch Geheimhaltung, sondern durch die Referrer- und
+// API-Restriktionen des Keys in der Cloud Console.
+app.get('/api/maps-key', (_, res) => res.json({ key: BROWSER_KEY, configured: !!BROWSER_KEY }));
 
 // Solo-Modus: Neue Runde starten – gibt Panorama-Daten zurück ohne Session
 app.get('/api/solo/start-round', async (req, res) => {
@@ -364,6 +449,13 @@ app.get('/api/solo/start-round', async (req, res) => {
       mapBounds,
     });
   } catch (err) {
+    if (err instanceof GoogleApiError) {
+      console.error(`[solo] Google Maps ${err.status}: ${err.message}\n${SETUP_HINT}`);
+      return res.status(502).json({
+        error: `Google Maps lehnt die Anfrage ab (${err.status}): ${err.message}`,
+        code: err.status,
+      });
+    }
     console.error('[solo] Fehler:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -510,7 +602,7 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown);
+    await startGameSafe(session, code, mode, customBounds, panoramaFilter, pinCountdown);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
@@ -531,7 +623,7 @@ io.on('connection', (socket) => {
     // Alle aktiven Spieler bereit → nächste Runde automatisch starten
     const active = session.players.filter((p) => !p.temporarilyGone && !p.spectator);
     if (active.length > 0 && active.every((p) => session.readyPlayers.has(p.name))) {
-      doStartGame(session, code, null);
+      startGameSafe(session, code, null);
     }
   });
 

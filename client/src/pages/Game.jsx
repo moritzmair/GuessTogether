@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import socket from '../socket.js';
+import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -21,7 +22,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
   const [pin, setPin] = useState(null);
   const [submitted, setSubmitted] = useState(alreadyPinned);
   const [pinCount, setPinCount] = useState(0);
-  const [panoError, setPanoError] = useState(false);
+  const [panoError, setPanoError] = useState(null);
   const [leftNotice, setLeftNotice] = useState(null);
   const [players, setPlayers] = useState(session.players || []);
   const [pinnedIds, setPinnedIds] = useState(new Set());
@@ -38,7 +39,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
   useEffect(() => {
     if (!isHost || !panoData || !panoRef.current) return;
     let cancelled = false;
-    setPanoError(false);
+    setPanoError(null);
 
     if (svInstanceRef.current) {
       svInstanceRef.current.setVisible(false);
@@ -46,18 +47,18 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
       panoRef.current.innerHTML = '';
     }
 
+    const unsubscribe = onGoogleAuthFailure((msg) => { if (!cancelled) setPanoError(msg); });
+
     (async () => {
-      if (!window.google?.maps?.StreetViewPanorama) {
-        const { key } = await fetch('/api/maps-key').then((r) => r.json());
-        await new Promise((resolve, reject) => {
-          const s = document.createElement('script');
-          s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&callback=Function.prototype`;
-          s.async = true; s.onload = resolve; s.onerror = reject;
-          document.head.appendChild(s);
-        });
+      let maps;
+      try {
+        maps = await loadGoogleMaps();
+      } catch (err) {
+        if (!cancelled) setPanoError(err.message);
+        return;
       }
       if (cancelled) return;
-      const sv = new window.google.maps.StreetViewPanorama(panoRef.current, {
+      const sv = new maps.StreetViewPanorama(panoRef.current, {
         pano: panoData.panoId,
         pov: { heading: panoData.heading, pitch: 0 },
         zoom: 1,
@@ -73,10 +74,12 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
       });
       svInstanceRef.current = sv;
       sv.addListener('status_changed', () => {
-        if (!cancelled && sv.getStatus() !== 'OK') setPanoError(true);
+        if (!cancelled && sv.getStatus() !== 'OK') {
+          setPanoError(`Street View nicht verfügbar für dieses Panorama (${sv.getStatus()})`);
+        }
       });
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; unsubscribe(); };
   }, [isHost, panoData]);
 
   // Karte für Spieler + Spectators initialisieren
@@ -171,10 +174,14 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
         <div style={{ position: 'absolute', inset: 0 }} />
         {panoError && (
           <div style={{
-            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: '1.1rem', background: '#111', zIndex: 5
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 10,
+            alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center',
+            color: '#fff', background: '#111', zIndex: 5
           }}>
-            ⚠️ Street View nicht verfügbar für diesen Standort
+            <div style={{ fontSize: '1.1rem' }}>⚠️ Street View konnte nicht geladen werden</div>
+            <div style={{ fontSize: '0.85rem', color: '#f87171', maxWidth: 620, lineHeight: 1.5 }}>
+              {panoError}
+            </div>
           </div>
         )}
 

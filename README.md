@@ -16,13 +16,38 @@ cp server/.env.example server/.env
 npm run dev
 ```
 
+### Google Cloud einrichten
+
+Im Cloud-Projekt des Keys müssen **beide** APIs aktiviert und ein **Abrechnungskonto
+verknüpft** sein – ohne Billing lehnt Google *jede* Anfrage mit `REQUEST_DENIED` ab,
+auch die kostenlosen Metadata-Aufrufe.
+
+| API | Wofür | Wo |
+|---|---|---|
+| Street View Static API | Panorama-Suche (Metadata) | Server |
+| Maps JavaScript API | Panorama anzeigen | Browser |
+
+Empfohlen sind zwei getrennte Keys:
+
+- `GOOGLE_MAPS_API_KEY` – Server, verlässt das Backend nie → auf die Server-IP einschränken
+- `GOOGLE_MAPS_BROWSER_KEY` – wird ans Frontend ausgeliefert und ist damit öffentlich
+  → per HTTP-Referrer auf die eigene Domain und auf die Maps JavaScript API einschränken
+
+Ohne `GOOGLE_MAPS_BROWSER_KEY` nutzt der Client den Server-Key (nur für Dev sinnvoll).
+
+Der Server prüft den Key beim Start mit einem echten Request und bricht mit
+Googles Originalmeldung ab, wenn etwas fehlt.
+
 > Client: `http://localhost:5173` · Server: `http://localhost:3001`
 
 ## Docker
 
 ```bash
 docker build -t guesstogether .
-docker run -p 3001:3001 -e GOOGLE_MAPS_API_KEY=dein_key guesstogether
+docker run -p 3001:3001 \
+  -e GOOGLE_MAPS_API_KEY=dein_server_key \
+  -e GOOGLE_MAPS_BROWSER_KEY=dein_browser_key \
+  guesstogether
 ```
 
 ## Spielablauf
