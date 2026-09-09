@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
+import { drawPlayArea, isInsidePlayArea } from '../playArea.js';
 
 const MODES = [
   { id: 'weltweit',    label: '🌍 Weltweit' },
@@ -54,6 +55,8 @@ export default function SoloGame({ onBack }) {
   // Custom-Bounds werden beim Start einmalig gespeichert, damit alle Folgerunden
   // dieselben Bounds nutzen – auch nachdem die Custom-Map-Instanz zerstört wurde.
   const [savedCustomBounds, setSavedCustomBounds] = useState(null);
+  const [areaHint, setAreaHint]             = useState(false);
+  const [showAbortConfirm, setShowAbortConfirm] = useState(false);
 
   const panoRef           = useRef(null);
   const svInstanceRef     = useRef(null);
@@ -151,8 +154,16 @@ export default function SoloGame({ onBack }) {
       gameLeaflet.current.fitBounds(currentRound.mapBounds, { padding: [10, 10] });
     }
 
+    const playArea = currentRound?.playArea || null;
+    drawPlayArea(gameLeaflet.current, playArea);
+
     gameLeaflet.current.on('click', (e) => {
       const { lat, lng } = e.latlng;
+      if (!isInsidePlayArea(lat, lng, playArea)) {
+        setAreaHint(true);
+        setTimeout(() => setAreaHint(false), 1800);
+        return;
+      }
       pinRef.current = { lat, lng };
       setPin({ lat, lng });
       if (markerRef.current) markerRef.current.remove();
@@ -277,6 +288,17 @@ export default function SoloGame({ onBack }) {
     } else {
       startRound(round + 1);
     }
+  }
+
+  // Solo-Spiel abbrechen -> zurueck ins Hauptmenue. Karten muessen explizit
+  // abgeraeumt werden, sonst bleiben die Leaflet-Instanzen haengen.
+  function handleAbort() {
+    if (gameLeaflet.current)   { gameLeaflet.current.remove();   gameLeaflet.current   = null; }
+    if (resultLeaflet.current) { resultLeaflet.current.remove(); resultLeaflet.current = null; }
+    if (svInstanceRef.current) { svInstanceRef.current.setVisible(false); svInstanceRef.current = null; }
+    markerRef.current = null;
+    pinRef.current = null;
+    onBack();
   }
 
   function handleRestart() {
@@ -437,25 +459,91 @@ export default function SoloGame({ onBack }) {
             </div>
           )}
 
-          {/* Runden-Badge */}
+          {/* Runden-Badge + Beenden */}
           <div style={{
-            position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.72)',
-            borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 10,
+            position: 'absolute', top: 8, left: 8, zIndex: 10,
+            display: 'flex', alignItems: 'center', gap: 6,
           }}>
-            🕹️ Solo &nbsp;·&nbsp; Runde {round}/{TOTAL_ROUNDS} &nbsp;·&nbsp; {totalScore.toLocaleString()} Pkt
+            <div style={{
+              background: 'rgba(0,0,0,0.72)',
+              borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff',
+            }}>
+              🕹️ Solo &nbsp;·&nbsp; Runde {round}/{TOTAL_ROUNDS} &nbsp;·&nbsp; {totalScore.toLocaleString()} Pkt
+            </div>
+            <button
+              onClick={() => setShowAbortConfirm(true)}
+              style={{
+                background: 'rgba(180,30,30,0.85)', border: 'none', borderRadius: 6,
+                padding: '4px 10px', fontSize: '0.78rem', color: '#fff', cursor: 'pointer',
+                fontWeight: 'bold', margin: 0, width: 'auto',
+              }}
+            >
+              ✕ Beenden
+            </button>
           </div>
+
+          {showAbortConfirm && (
+            <div style={{
+              position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.72)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+            }}>
+              <div style={{
+                background: '#1e1e2e', borderRadius: 10, padding: '24px 28px', maxWidth: 320,
+                textAlign: 'center', color: '#fff', boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+              }}>
+                <div style={{ fontSize: '1.3rem', marginBottom: 8 }}>⏹ Solo-Spiel beenden?</div>
+                <div style={{ fontSize: '0.85rem', color: '#aaa', marginBottom: 20 }}>
+                  Zurück zum Hauptmenü. Die {totalScore.toLocaleString()} Punkte aus
+                  {' '}{history.length} gespielten Runden gehen verloren.
+                </div>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                  <button
+                    onClick={() => setShowAbortConfirm(false)}
+                    style={{
+                      background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 6,
+                      padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem', margin: 0,
+                    }}
+                  >
+                    Weiterspielen
+                  </button>
+                  <button
+                    onClick={handleAbort}
+                    style={{
+                      background: '#b41e1e', border: 'none', borderRadius: 6,
+                      padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem',
+                      fontWeight: 'bold', margin: 0,
+                    }}
+                  >
+                    Ja, beenden
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Karte – untere Hälfte */}
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           <div ref={gameMapRef} style={{ width: '100%', height: '100%' }} />
-          {!pin && (
+          {!pin && !areaHint && (
             <div style={{
               position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
               background: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: '4px 12px',
               fontSize: '0.78rem', color: '#ccc', pointerEvents: 'none', zIndex: 1000, whiteSpace: 'nowrap',
             }}>
-              Tippe auf die Karte um einen Pin zu setzen
+              {currentRound?.playArea
+                ? 'Tippe ins markierte Gebiet um einen Pin zu setzen'
+                : 'Tippe auf die Karte um einen Pin zu setzen'}
+            </div>
+          )}
+          {areaHint && (
+            <div style={{
+              position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
+              background: 'rgba(220,50,50,0.9)', borderRadius: 6, padding: '4px 12px',
+              fontSize: '0.78rem', color: '#fff', fontWeight: 'bold',
+              pointerEvents: 'none', zIndex: 1000, whiteSpace: 'nowrap',
+            }}>
+              ⛔ Außerhalb des Spielgebiets
             </div>
           )}
         </div>
@@ -556,6 +644,13 @@ export default function SoloGame({ onBack }) {
             }}
           >
             {isLast ? '📊 Zusammenfassung' : '▶ Nächste Runde'}
+          </button>
+
+          <button
+            onClick={handleAbort}
+            style={{ width: '100%', background: '#2a2a3e', color: '#bbb', fontWeight: 'normal' }}
+          >
+            ✕ Spiel beenden
           </button>
         </div>
       </div>

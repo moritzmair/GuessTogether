@@ -295,6 +295,19 @@ async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, 
   throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
 }
 
+// Liegt der Punkt im Spielgebiet? Ohne Gebiet ist alles erlaubt.
+// Spiegelt isInsidePlayArea() aus client/src/playArea.js – dort wird der Klick schon
+// abgefangen, hier zaehlt es wirklich: ein manipulierter Client kaeme sonst durch.
+function isInsidePlayArea(lat, lng, playArea) {
+  if (!playArea) return true;
+  const [[south, west], [north, east]] = playArea;
+  if (lat < Math.min(south, north) || lat > Math.max(south, north)) return false;
+  if (Math.abs(east - west) >= 360) return true;
+  const norm = (v) => ((v + 180) % 360 + 360) % 360 - 180;
+  const l = norm(lng), w = norm(west), e = norm(east);
+  return w <= e ? l >= w && l <= e : l >= w || l <= e;
+}
+
 // Runde abschließen
 function finishRound(session, code) {
   if (session.phase !== 'game') return;
@@ -367,14 +380,22 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   const cb = session.customBounds;
+  // mapBounds = Zoom-Hilfe fuer die Rate-Karte.
+  // playArea  = verbindliche Grenze fuer Pins. Nur im Custom-Modus gesetzt: dort ist der
+  //             gewaehlte Ausschnitt exakt das Spielgebiet. Bei "europa" ist mapBounds
+  //             nur die Huellbox ueber 10 Teilregionen und damit deutlich groesser als
+  //             das tatsaechliche Gebiet – als harte Grenze waere sie schlicht falsch.
   let mapBounds = null;
+  let playArea = null;
   if (gameMode === 'custom' && cb) {
     mapBounds = [[cb.lat[0], cb.lng[0]], [cb.lat[1], cb.lng[1]]];
+    playArea = mapBounds;
   } else {
     const modeRegions = gameMode === 'europa' ? REGIONS_EUROPA : null;
     if (modeRegions) mapBounds = regionsToBounds(modeRegions);
   }
   session.mapBounds = mapBounds;
+  session.playArea = playArea;
 
   if (!session.usedPanoIds) session.usedPanoIds = new Set();
   session.usedPanoIds.add(base.pano_id);
@@ -391,6 +412,7 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
     heading: session.location.heading,
     players: activePlayers(session),
     mapBounds,
+    playArea,
   });
   console.log('game started:', code, base.label);
 }
@@ -436,8 +458,10 @@ app.get('/api/solo/start-round', async (req, res) => {
     const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
     let mapBounds = null;
+    let playArea = null;
     if (mode === 'custom' && customBounds) {
       mapBounds = [[customBounds.lat[0], customBounds.lng[0]], [customBounds.lat[1], customBounds.lng[1]]];
+      playArea = mapBounds;
     } else if (mode === 'europa') {
       mapBounds = regionsToBounds(REGIONS_EUROPA);
     }
@@ -447,6 +471,7 @@ app.get('/api/solo/start-round', async (req, res) => {
       heading,
       location: { lat: base.lat, lng: base.lng, label: base.label },
       mapBounds,
+      playArea,
     });
   } catch (err) {
     if (err instanceof GoogleApiError) {
@@ -507,6 +532,7 @@ io.on('connection', (socket) => {
       resp.panoId = session.location.pano_id;
       resp.heading = session.location.heading;
       resp.mapBounds = session.mapBounds || null;
+      resp.playArea = session.playArea || null;
     }
     cb(resp);
     console.log(`${name} joined ${code}${isSpectator ? ' (spectator)' : ''}`);
@@ -536,6 +562,7 @@ io.on('connection', (socket) => {
         resp.panoId = session.location.pano_id;
         resp.heading = session.location.heading;
         resp.mapBounds = session.mapBounds || null;
+      resp.playArea = session.playArea || null;
       }
       if (session.phase === 'results' && session.currentRoundData) {
         resp.roundData = session.currentRoundData;
@@ -587,6 +614,7 @@ io.on('connection', (socket) => {
       resp.heading = session.location.heading;
       resp.alreadyPinned = !!session.pins[socket.id];
       resp.mapBounds = session.mapBounds || null;
+      resp.playArea = session.playArea || null;
     }
     if (session.phase === 'results' && session.currentRoundData) {
       resp.roundData = session.currentRoundData;
@@ -635,6 +663,11 @@ io.on('connection', (socket) => {
     if (socket.id === session.host) return;
     const placing = session.players.find((p) => p.id === socket.id);
     if (placing?.spectator) return;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || !isFinite(lat) || !isFinite(lng)) return;
+    if (!isInsidePlayArea(lat, lng, session.playArea)) {
+      console.warn(`[game] Pin ausserhalb des Spielgebiets verworfen (${placing?.name}: ${lat}, ${lng})`);
+      return;
+    }
 
     session.pins[socket.id] = { lat, lng };
 
@@ -671,6 +704,8 @@ io.on('connection', (socket) => {
     session.round = 0;
     session.leftThisRound = [];
     session.customBounds = null;
+    session.mapBounds = null;
+    session.playArea = null;
     session.players.forEach((p) => { p.score = 0; p.spectator = false; p.temporarilyGone = false; });
     session.usedPanoIds = new Set();
     io.to(code).emit('back-to-lobby');

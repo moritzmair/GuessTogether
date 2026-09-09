@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import socket from '../socket.js';
 import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
+import { drawPlayArea, isInsidePlayArea, normalizeLng } from '../playArea.js';
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -27,6 +28,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
   const [players, setPlayers] = useState(session.players || []);
   const [pinnedIds, setPinnedIds] = useState(new Set());
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
+  const [areaHint, setAreaHint] = useState(false);
   const [countdown, setCountdown] = useState(null);
   const countdownRef = useRef(null);
 
@@ -98,10 +100,18 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
       leafletMap.current.setView([20, 0], 2);
     }
 
+    const playArea = panoData?.playArea || null;
+    drawPlayArea(leafletMap.current, playArea);
+
     if (!isSpectator) {
       leafletMap.current.on('click', (e) => {
         if (submittedRef.current) return;
         const { lat, lng } = e.latlng;
+        if (!isInsidePlayArea(lat, lng, playArea)) {
+          setAreaHint(true);
+          setTimeout(() => setAreaHint(false), 1800);
+          return;
+        }
         setPin({ lat, lng });
         if (markerRef.current) markerRef.current.remove();
         markerRef.current = L.marker([lat, lng]).addTo(leafletMap.current);
@@ -150,10 +160,6 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
       clearInterval(countdownRef.current);
     };
   }, []);
-
-  function normalizeLng(lng) {
-    return ((lng + 180) % 360 + 360) % 360 - 180;
-  }
 
   function submitPin() {
     if (!pin) return;
@@ -335,6 +341,27 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
             borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 1001
           }}>
             👋 {leftNotice}
+          </div>
+        )}
+
+        {areaHint && (
+          <div style={{
+            position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(220,50,50,0.9)', borderRadius: 6, padding: '5px 14px',
+            fontSize: '0.8rem', color: '#fff', fontWeight: 'bold',
+            pointerEvents: 'none', zIndex: 1002, whiteSpace: 'nowrap'
+          }}>
+            ⛔ Außerhalb des Spielgebiets
+          </div>
+        )}
+
+        {panoData?.playArea && !pin && !areaHint && !submitted && !isSpectator && (
+          <div style={{
+            position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: '4px 12px',
+            fontSize: '0.78rem', color: '#ccc', pointerEvents: 'none', zIndex: 1001, whiteSpace: 'nowrap'
+          }}>
+            Tippe ins markierte Gebiet
           </div>
         )}
       </div>
