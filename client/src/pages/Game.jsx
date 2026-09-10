@@ -12,30 +12,32 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
 });
 
-export default function Game({ session, panoData, alreadyPinned = false, isSpectator = false }) {
+export default function Game({ session, panoData, isSpectator = false }) {
   const mapRef = useRef(null);
   const panoRef = useRef(null);
   const svInstanceRef = useRef(null);
   const leafletMap = useRef(null);
   const markerRef = useRef(null);
-  const submittedRef = useRef(alreadyPinned);
+  const submittedRef = useRef(!!panoData.alreadyPinned);
 
   const [pin, setPin] = useState(null);
-  const [submitted, setSubmitted] = useState(alreadyPinned);
-  const [pinCount, setPinCount] = useState(0);
+  const [submitted, setSubmitted] = useState(!!panoData.alreadyPinned);
+  // Startwerte vom Server – beim Wiederbeitritt mitten in der Runde nicht bei 0 anfangen
+  const [pinnedIds, setPinnedIds] = useState(() => new Set(panoData.pinnedIds || []));
+  const [pinCount, setPinCount] = useState(panoData.pinnedIds?.length || 0);
+  const [totalPlayers, setTotalPlayers] = useState(
+    panoData.totalPlayers ?? (session.players || []).filter((p) => !p.spectator).length
+  );
   const [panoError, setPanoError] = useState(null);
   const [leftNotice, setLeftNotice] = useState(null);
   const [players, setPlayers] = useState(session.players || []);
-  const [pinnedIds, setPinnedIds] = useState(new Set());
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [areaHint, setAreaHint] = useState(false);
   const [countdown, setCountdown] = useState(null);
   const countdownRef = useRef(null);
 
-  const activeSeatCount = players.filter((p) => !p.spectator).length;
-  const [totalPlayers, setTotalPlayers] = useState(activeSeatCount);
-
   const isHost = session.isHost;
+  const roundLabel = panoData.round ? `Runde ${panoData.round}/${panoData.totalRounds}` : null;
 
   // Street View Panorama für Host initialisieren
   useEffect(() => {
@@ -60,6 +62,8 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
         return;
       }
       if (cancelled) return;
+      // Umschauen und Zoomen erlaubt, Laufen nicht: keine Pfeile, kein Klick-zum-Gehen,
+      // keine Pfeiltasten (die bewegen sonst entlang der Strasse)
       const sv = new maps.StreetViewPanorama(panoRef.current, {
         pano: panoData.panoId,
         pov: { heading: panoData.heading, pitch: 0 },
@@ -70,6 +74,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
         panControl: false,
         zoomControl: true,
         scrollwheel: true,
+        keyboardShortcuts: false,
         motionTracking: false,
         motionTrackingControl: false,
         showRoadLabels: false,
@@ -115,6 +120,9 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
         setPin({ lat, lng });
         if (markerRef.current) markerRef.current.remove();
         markerRef.current = L.marker([lat, lng]).addTo(leafletMap.current);
+        // Vormerken: endet die Runde vor dem Bestaetigen (Countdown, Host loest auf),
+        // zaehlt dieser Pin trotzdem
+        socket.emit('place-pin', { lat, lng: normalizeLng(lng), draft: true });
       });
     }
 
@@ -126,37 +134,47 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
     };
   }, [isHost, isSpectator]);
 
+  function startCountdown(seconds) {
+    setCountdown(seconds);
+    clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) { clearInterval(countdownRef.current); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
   useEffect(() => {
-    socket.on('pin-placed', ({ playerId, pinCount: pc, totalPlayers: tp }) => {
+    // Laeuft der Countdown schon (Wiederbeitritt), mit der Restzeit weitermachen
+    if (panoData.countdownLeft > 0) startCountdown(panoData.countdownLeft);
+
+    const onPinPlaced = ({ playerId, pinCount: pc, totalPlayers: tp }) => {
       setPinCount(pc);
       setTotalPlayers(tp);
       if (playerId) setPinnedIds((prev) => new Set([...prev, playerId]));
-    });
-    socket.on('player-left', ({ name, players: updated }) => {
+    };
+    const onPlayerLeft = ({ name, players: updated }) => {
       setPlayers(updated);
       setTotalPlayers(updated.filter((p) => !p.spectator).length);
       setLeftNotice(`${name} hat das Spiel verlassen`);
       setTimeout(() => setLeftNotice(null), 3000);
-    });
-    socket.on('players-updated', (updated) => {
+    };
+    const onPlayersUpdated = (updated) => {
       setPlayers(updated);
       setTotalPlayers(updated.filter((p) => !p.spectator).length);
-    });
-    socket.on('countdown-started', ({ seconds }) => {
-      setCountdown(seconds);
-      clearInterval(countdownRef.current);
-      countdownRef.current = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) { clearInterval(countdownRef.current); return 0; }
-          return prev - 1;
-        });
-      }, 1000);
-    });
+    };
+    const onCountdown = ({ seconds }) => startCountdown(seconds);
+
+    socket.on('pin-placed', onPinPlaced);
+    socket.on('player-left', onPlayerLeft);
+    socket.on('players-updated', onPlayersUpdated);
+    socket.on('countdown-started', onCountdown);
     return () => {
-      socket.off('pin-placed');
-      socket.off('player-left');
-      socket.off('players-updated');
-      socket.off('countdown-started');
+      socket.off('pin-placed', onPinPlaced);
+      socket.off('player-left', onPlayerLeft);
+      socket.off('players-updated', onPlayersUpdated);
+      socket.off('countdown-started', onCountdown);
       clearInterval(countdownRef.current);
     };
   }, []);
@@ -168,6 +186,11 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
     setSubmitted(true);
   }
 
+  const hostButton = {
+    border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff',
+    cursor: 'pointer', fontWeight: 'bold', margin: 0, width: 'auto',
+  };
+
   // Host-Ansicht
   if (isHost) {
     const activePlayers = players.filter((p) => !p.spectator);
@@ -177,7 +200,6 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#000' }}>
         <div ref={panoRef} style={{ width: '100%', height: '100%' }} />
-        <div style={{ position: 'absolute', inset: 0 }} />
         {panoError && (
           <div style={{
             position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 10,
@@ -191,30 +213,26 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           </div>
         )}
 
-        {/* Oben-links: Abbrechen-Button + Pin-Counter */}
-        <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <button
-            onClick={() => setShowAbortConfirm(true)}
-            style={{
-              background: 'rgba(180,30,30,0.85)',
-              border: 'none',
-              borderRadius: 6,
-              padding: '4px 10px',
-              fontSize: '0.8rem',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              margin: 0,
-              width: 'auto',
-            }}
-          >
-            ✕ Spiel beenden
-          </button>
+        {/* Oben-links: Steuerung + Pin-Counter */}
+        <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={() => setShowAbortConfirm(true)} style={{ ...hostButton, background: 'rgba(180,30,30,0.85)' }}>
+              ✕ Spiel beenden
+            </button>
+            {/* Ohne diesen Knopf wartete die Runde auf jeden, dessen Handy eingeschlafen ist */}
+            <button
+              onClick={() => socket.emit('end-round')}
+              title="Runde jetzt auswerten – gesetzte, unbestätigte Pins zählen mit"
+              style={{ ...hostButton, background: 'rgba(74,158,255,0.85)' }}
+            >
+              ⏭ Runde auflösen
+            </button>
+          </div>
           <div style={{
             background: 'rgba(0,0,0,0.7)',
             borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff'
           }}>
-            🌍 Wo bin ich? – {pinCount}/{totalPlayers} Pins gesetzt
+            🌍 {roundLabel ? `${roundLabel} · ` : ''}{pinCount}/{totalPlayers} Pins gesetzt
           </div>
         </div>
 
@@ -278,7 +296,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
             <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, opacity: p.temporarilyGone ? 0.45 : 1 }}>
               <span style={{ opacity: 0.6, width: 16 }}>{i + 1}.</span>
               <span style={{ flex: 1 }}>{p.name}</span>
-              <span style={{ opacity: 0.7, marginRight: 4 }}>{p.score}</span>
+              <span style={{ opacity: 0.7, marginRight: 4 }}>{p.score.toLocaleString()}</span>
               <span>{p.temporarilyGone ? '❌' : pinnedIds.has(p.id) ? '✅' : '⏳'}</span>
             </div>
           ))}
@@ -322,6 +340,16 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           </div>
         )}
 
+        {roundLabel && !isSpectator && (
+          <div style={{
+            position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.7)',
+            borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 1001,
+            pointerEvents: 'none',
+          }}>
+            {roundLabel}
+          </div>
+        )}
+
         {countdown !== null && countdown > 0 && (
           <div style={{
             position: 'absolute', top: isSpectator ? 46 : 10, left: '50%', transform: 'translateX(-50%)',
@@ -337,7 +365,7 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
 
         {leftNotice && (
           <div style={{
-            position: 'absolute', top: 8, right: 8, background: 'rgba(220,50,50,0.85)',
+            position: 'absolute', top: isSpectator ? 46 : 40, right: 8, background: 'rgba(220,50,50,0.85)',
             borderRadius: 6, padding: '4px 10px', fontSize: '0.8rem', color: '#fff', zIndex: 1001
           }}>
             👋 {leftNotice}
@@ -355,13 +383,13 @@ export default function Game({ session, panoData, alreadyPinned = false, isSpect
           </div>
         )}
 
-        {panoData?.playArea && !pin && !areaHint && !submitted && !isSpectator && (
+        {!pin && !areaHint && !submitted && !isSpectator && (
           <div style={{
             position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
             background: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: '4px 12px',
             fontSize: '0.78rem', color: '#ccc', pointerEvents: 'none', zIndex: 1001, whiteSpace: 'nowrap'
           }}>
-            Tippe ins markierte Gebiet
+            {panoData?.playArea ? 'Tippe ins markierte Gebiet' : 'Tippe auf die Karte, wo der Ort liegt'}
           </div>
         )}
       </div>

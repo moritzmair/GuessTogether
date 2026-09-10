@@ -5,7 +5,7 @@ import Game from './pages/Game.jsx';
 import Results from './pages/Results.jsx';
 import Summary from './pages/Summary.jsx';
 import SoloGame from './pages/SoloGame.jsx';
-import socket from './socket.js';
+import socket, { REQUEST_TIMEOUT_MS, OFFLINE_MSG } from './socket.js';
 
 const SESSIONS_KEY = 'gg_sessions';
 
@@ -62,7 +62,6 @@ export default function App() {
   const [results, setResults] = useState(null);
   const [gamePano, setGamePano] = useState(null);
   const [history, setHistory] = useState([]);
-  const [alreadyPinned, setAlreadyPinned] = useState(false);
   const [isSpectator, setIsSpectator] = useState(false);
   const [savedSessions, setSavedSessions] = useState(() => Object.values(loadAllSessions()));
   const pageRef = useRef('home');
@@ -77,10 +76,27 @@ export default function App() {
     }
   }, [session, page]);
 
+  // Stand vom Server nach (Wieder-)Beitritt uebernehmen und die passende Seite oeffnen.
+  // history kommt vom Server, damit die Zusammenfassung auch nach einem Reload oder
+  // spaetem Beitritt alle Runden kennt.
+  function applyServerState(res) {
+    setHistory(res.history || []);
+    setIsSpectator(!!res.spectator);
+    if (res.phase === 'game' && res.game) {
+      setGamePano(res.game);
+      setPage('game');
+    } else if (res.phase === 'results' && res.roundData) {
+      setResults(res.roundData);
+      setPage('results');
+    } else {
+      setPage('lobby');
+    }
+  }
+
   // Reconnect-Handler: nur wenn bereits in einer Session (nicht auf Home)
   useEffect(() => {
     const handleConnect = () => {
-      if (pageRef.current === 'home') return;
+      if (pageRef.current === 'home' || pageRef.current === 'soloGame') return;
       const s = sessionRef.current;
       if (!s?.code) return;
 
@@ -92,22 +108,13 @@ export default function App() {
       }, (res) => {
         if (res.error) {
           clearSession(s);
+          setSavedSessions(Object.values(loadAllSessions()));
           setPage('home');
           setSession(null);
           return;
         }
         setSession((prev) => ({ ...(prev || {}), players: res.players }));
-        if (res.phase === 'game' && res.panoId) {
-          setGamePano({ panoId: res.panoId, heading: res.heading, mapBounds: res.mapBounds || null, playArea: res.playArea || null });
-          setAlreadyPinned(res.alreadyPinned || false);
-          setIsSpectator(false);
-          setPage('game');
-        } else if (res.phase === 'results' && res.roundData) {
-          setResults(res.roundData);
-          setPage('results');
-        } else {
-          setPage('lobby');
-        }
+        applyServerState(res);
       });
     };
 
@@ -116,59 +123,60 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    socket.on('game-started', ({ panoId, heading, players, mapBounds, playArea }) => {
-      setGamePano({ panoId, heading, mapBounds: mapBounds || null, playArea: playArea || null });
-      setAlreadyPinned(false);
+    const onGameStarted = ({ players, ...state }) => {
+      setGamePano(state);
       setIsSpectator(false);
       if (players) setSession((s) => ({ ...s, players }));
       setPage('game');
-    });
-    socket.on('round-ended', (r) => { setResults(r); setHistory((prev) => [...prev, r]); setPage('results'); });
-    socket.on('results-updated', (r) => { setResults(r); setHistory((prev) => prev.map((h) => h.round === r.round ? r : h)); });
-    socket.on('back-to-lobby', () => { setHistory([]); setPage('lobby'); });
-    socket.on('host-left', () => {
+    };
+    const onRoundEnded = (r) => {
+      setResults(r);
+      setHistory((prev) => [...prev.filter((h) => h.round !== r.round), r]);
+      setPage('results');
+    };
+    const onResultsUpdated = (r) => {
+      setResults(r);
+      setHistory((prev) => prev.map((h) => (h.round === r.round ? r : h)));
+    };
+    const onBackToLobby = () => { setHistory([]); setPage('lobby'); };
+    const onHostLeft = () => {
       clearSession(sessionRef.current);
       setSavedSessions(Object.values(loadAllSessions()));
       setPage('home');
       setSession(null);
-    });
-    socket.on('players-updated', (players) => {
-      setSession((s) => s ? { ...s, players } : s);
-    });
-    return () => {
-      socket.off('game-started');
-      socket.off('round-ended');
-      socket.off('results-updated');
-      socket.off('back-to-lobby');
-      socket.off('host-left');
-      socket.off('players-updated');
     };
+    const onPlayersUpdated = (players) => setSession((s) => (s ? { ...s, players } : s));
+
+    // Mit Handler abmelden – socket.off(event) ohne Handler entfernt auch die Listener
+    // der Seiten (und umgekehrt), dann verpasst App z. B. Spielerlisten-Updates.
+    const handlers = {
+      'game-started': onGameStarted,
+      'round-ended': onRoundEnded,
+      'results-updated': onResultsUpdated,
+      'back-to-lobby': onBackToLobby,
+      'host-left': onHostLeft,
+      'players-updated': onPlayersUpdated,
+    };
+    Object.entries(handlers).forEach(([event, fn]) => socket.on(event, fn));
+    return () => Object.entries(handlers).forEach(([event, fn]) => socket.off(event, fn));
   }, []);
 
-  function handleRejoin(saved) {
-    socket.emit('rejoin-session', {
+  // onFail(message): Home zeigt den Fehler an, statt ewig auf "Verbinde…" zu stehen
+  function handleRejoin(saved, onFail) {
+    socket.timeout(REQUEST_TIMEOUT_MS).emit('rejoin-session', {
       code: saved.code,
       name: saved.name,
       isHost: saved.isHost,
       hostSecret: saved.hostSecret,
-    }, (res) => {
+    }, (err, res) => {
+      if (err) return onFail?.(OFFLINE_MSG);
       if (res.error) {
         clearSession(saved);
         setSavedSessions(Object.values(loadAllSessions()));
-        return;
+        return onFail?.(res.error);
       }
       setSession({ ...saved, players: res.players });
-      if (res.phase === 'game' && res.panoId) {
-        setGamePano({ panoId: res.panoId, heading: res.heading, mapBounds: res.mapBounds || null, playArea: res.playArea || null });
-        setAlreadyPinned(res.alreadyPinned || false);
-        setIsSpectator(false);
-        setPage('game');
-      } else if (res.phase === 'results' && res.roundData) {
-        setResults(res.roundData);
-        setPage('results');
-      } else {
-        setPage('lobby');
-      }
+      applyServerState(res);
     });
   }
 
@@ -189,14 +197,7 @@ export default function App() {
         onSolo={() => setPage('soloGame')}
         onJoined={(s) => {
           setSession(s);
-          setIsSpectator(s.spectator || false);
-          if (s.spectator && s.panoId) {
-            setGamePano({ panoId: s.panoId, heading: s.heading, mapBounds: s.mapBounds || null, playArea: s.playArea || null });
-            setAlreadyPinned(false);
-            setPage('game');
-          } else {
-            setPage('lobby');
-          }
+          applyServerState(s);
         }}
       />
     );
@@ -207,16 +208,18 @@ export default function App() {
   if (page === 'lobby')
     return <Lobby session={session} onSessionUpdate={(s) => setSession(s)} onLeave={handleLeaveSession} />;
 
+  // key: neue Runde = neue Instanz. Sonst behielt ein Handy, das waehrend einer Runde
+  // einschlief und erst in der naechsten aufwachte, "Pin gesetzt" aus der alten Runde.
   if (page === 'game')
-    return <Game session={session} panoData={gamePano} alreadyPinned={alreadyPinned} isSpectator={isSpectator} />;
+    return <Game key={gamePano.panoId} session={session} panoData={gamePano} isSpectator={isSpectator} />;
 
   if (page === 'results')
     return (
       <Results
+        key={results.round}
         results={results}
         session={session}
         onNextRound={() => socket.emit('start-game')}
-        onNewGame={() => socket.emit('back-to-lobby')}
         onShowSummary={() => setPage('summary')}
       />
     );

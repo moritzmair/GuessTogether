@@ -4,6 +4,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import socket from '../socket.js';
 import { scoreExamples } from '../playArea.js';
+import { loadSettings, saveSettings } from '../settings.js';
 
 const MODES = [
   { id: 'weltweit', label: '🌍 Weltweit' },
@@ -19,13 +20,16 @@ const PANORAMA_SOURCES = [
 ];
 
 export default function Lobby({ session, onSessionUpdate, onLeave }) {
+  const [settings] = useState(loadSettings);
   const [players, setPlayers] = useState(session.players || []);
-  const [mode, setMode] = useState('weltweit');
-  const [panoramaSource, setPanoramaSource] = useState('google');
-  const [outdoorOnly, setOutdoorOnly] = useState(true);
-  const [pinCountdown, setPinCountdown] = useState(30);
-  const [countdownEnabled, setCountdownEnabled] = useState(false);
+  const [mode, setMode] = useState(settings.mode || 'weltweit');
+  const [panoramaSource, setPanoramaSource] = useState(settings.panoramaSource || 'google');
+  const [outdoorOnly, setOutdoorOnly] = useState(settings.outdoorOnly ?? true);
+  // Als Text gehalten: sonst sprang das Feld beim Leeren sofort auf 5 und "20" wurde zu "520"
+  const [pinCountdown, setPinCountdown] = useState(String(settings.pinCountdown || 30));
+  const [countdownEnabled, setCountdownEnabled] = useState(settings.countdownEnabled ?? false);
   const [startError, setStartError] = useState(null);
+  const [starting, setStarting] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
   // Aktueller Ausschnitt der Custom-Karte – nur fuer die Punkte-Beispiele
   const [customArea, setCustomArea] = useState(null);
@@ -35,18 +39,26 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
   const joinUrl = `${window.location.origin}?join=${session.code}`;
 
   useEffect(() => {
-    socket.on('players-updated', (updatedPlayers) => {
+    const onPlayersUpdated = (updatedPlayers) => {
       setPlayers(updatedPlayers);
       onSessionUpdate({ ...session, players: updatedPlayers });
-    });
+    };
     // Rundenstart fehlgeschlagen (Google-Fehler, kein Panorama gefunden) –
     // die Session bleibt in der Lobby, der Host kann es erneut versuchen.
-    socket.on('game-error', ({ message }) => setStartError(message));
+    const onGameError = ({ message }) => { setStarting(false); setStartError(message); };
+    socket.on('players-updated', onPlayersUpdated);
+    socket.on('game-error', onGameError);
     return () => {
-      socket.off('players-updated');
-      socket.off('game-error');
+      socket.off('players-updated', onPlayersUpdated);
+      socket.off('game-error', onGameError);
     };
   }, []);
+
+  useEffect(() => {
+    saveSettings({ mode, panoramaSource, outdoorOnly, countdownEnabled });
+  }, [mode, panoramaSource, outdoorOnly, countdownEnabled]);
+
+  const countdownSeconds = Math.min(300, Math.max(5, Math.round(Number(pinCountdown)) || 30));
 
   useEffect(() => {
     if (mode !== 'custom') {
@@ -57,7 +69,8 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
       return;
     }
     if (!customMapRef.current || customMapInstance.current) return;
-    const map = L.map(customMapRef.current).setView([50, 10], 5);
+    const view = loadSettings().customView;
+    const map = L.map(customMapRef.current).setView(view?.center || [50, 10], view?.zoom || 5);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap'
     }).addTo(map);
@@ -65,6 +78,8 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
     const syncArea = () => {
       const b = map.getBounds();
       setCustomArea([[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]]);
+      const c = map.getCenter();
+      saveSettings({ customView: { center: [c.lat, c.lng], zoom: map.getZoom() } });
     };
     map.on('moveend', syncArea);
     syncArea();
@@ -85,7 +100,10 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
 
   function startGame() {
     setStartError(null);
-    const countdown = countdownEnabled ? pinCountdown : 0;
+    setStarting(true);
+    setPinCountdown(String(countdownSeconds));
+    saveSettings({ pinCountdown: countdownSeconds });
+    const countdown = countdownEnabled ? countdownSeconds : 0;
     const panorama = { googleOnly: panoramaSource === 'google', outdoorOnly };
     if (mode === 'custom' && customMapInstance.current) {
       const b = customMapInstance.current.getBounds();
@@ -286,7 +304,8 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
                     min={5}
                     max={300}
                     value={pinCountdown}
-                    onChange={(e) => setPinCountdown(Math.max(5, Number(e.target.value)))}
+                    onChange={(e) => setPinCountdown(e.target.value)}
+                    onBlur={() => setPinCountdown(String(countdownSeconds))}
                     style={{ width: 64, margin: 0, padding: '4px 8px', fontSize: '0.85rem', textAlign: 'center' }}
                   />
                   <span style={{ fontSize: '0.8rem', color: '#888' }}>Sek.</span>
@@ -318,8 +337,12 @@ export default function Lobby({ session, onSessionUpdate, onLeave }) {
               </div>
             )}
 
-            <button onClick={startGame} disabled={players.length < 1}>
-              Spiel starten ({players.length} Spieler)
+            <button onClick={startGame} disabled={players.length < 1 || starting}>
+              {starting
+                ? '🔎 Suche Ort…'
+                : players.length < 1
+                  ? 'Warte auf Spieler…'
+                  : `Spiel starten (${players.length} Spieler)`}
             </button>
           </>
         ) : (

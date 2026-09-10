@@ -7,6 +7,16 @@ export function normalizeLng(lng) {
   return ((lng + 180) % 360 + 360) % 360 - 180;
 }
 
+/**
+ * Laenge auf die Weltkopie legen, die refLng am naechsten liegt – fuer Pins und Linien
+ * auf Ergebniskarten. Sonst landet ein Pin, der auf einer Nachbarkopie der Karte gesetzt
+ * wurde, eine ganze Welt neben dem Ziel, und nahe der Datumsgrenze laeuft die Linie
+ * einmal um den Globus. Die Punkte stimmten schon vorher (Haversine rechnet periodisch).
+ */
+export function nearestWorldCopy(lng, refLng) {
+  return refLng + normalizeLng(lng - refLng);
+}
+
 /** Liegt der Punkt im Spielgebiet? Ohne Gebiet ist alles erlaubt. */
 export function isInsidePlayArea(lat, lng, playArea) {
   if (!playArea) return true;

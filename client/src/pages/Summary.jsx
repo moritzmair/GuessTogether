@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import socket from '../socket.js';
+import { escapeHtml, formatDistance } from '../format.js';
+import { nearestWorldCopy } from '../playArea.js';
 
 const COLORS = ['#f87171', '#fb923c', '#facc15', '#4ade80', '#60a5fa'];
 
@@ -28,26 +30,28 @@ export default function Summary({ history, session, onNewGame }) {
         className: ''
       });
       L.marker([location.lat, location.lng], { icon: targetIcon })
-        .bindPopup(`<b>Runde ${round}</b><br>📍 ${location.label}`)
+        .bindPopup(`<b>Runde ${round}</b><br>📍 ${escapeHtml(location.label)}`)
         .addTo(leafletMap.current);
 
       results.forEach((p) => {
         if (!p.pin) return;
-        bounds.extend([p.pin.lat, p.pin.lng]);
+        const name = escapeHtml(p.name);
+        const pinPos = [p.pin.lat, nearestWorldCopy(p.pin.lng, location.lng)];
+        bounds.extend(pinPos);
         const playerIcon = L.divIcon({
           html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
             <div style="background:${color};width:10px;height:10px;border-radius:50%;border:2px solid #fff;opacity:0.85"></div>
-            <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;white-space:nowrap;margin-top:1px">${p.name}</div>
+            <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;white-space:nowrap;margin-top:1px">${name}</div>
           </div>`,
           iconSize: [70, 26],
           iconAnchor: [35, 5],
           className: ''
         });
-        L.marker([p.pin.lat, p.pin.lng], { icon: playerIcon })
-          .bindPopup(`<b>${p.name}</b> – Runde ${round}<br>${p.dist} km entfernt (+${p.points} Pkt)`)
+        L.marker(pinPos, { icon: playerIcon })
+          .bindPopup(`<b>${name}</b> – Runde ${round}<br>${formatDistance(p.dist)} entfernt (+${p.points.toLocaleString()} Pkt)`)
           .addTo(leafletMap.current);
 
-        L.polyline([[location.lat, location.lng], [p.pin.lat, p.pin.lng]], {
+        L.polyline([[location.lat, location.lng], pinPos], {
           color, dashArray: '4 3', weight: 1.5, opacity: 0.5
         }).addTo(leafletMap.current);
       });
@@ -61,7 +65,7 @@ export default function Summary({ history, session, onNewGame }) {
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
       <div ref={mapRef} style={{ flex: '0 0 45%' }} />
       <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
         <h2 style={{ marginBottom: 4 }}>🏆 Finale Rangliste</h2>
@@ -99,7 +103,7 @@ export default function Summary({ history, session, onNewGame }) {
                 )}
               </div>
               <div style={{ fontWeight: 'bold', color: '#4ade80', fontSize: '1.1rem' }}>
-                {p.totalScore} Pkt
+                {p.totalScore.toLocaleString()} Pkt
               </div>
             </li>
           ))}

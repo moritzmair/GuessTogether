@@ -2,8 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { isNearLand } = require('./landMask');
 
 // Zwei Keys, zwei Einsatzorte:
 //   MAPS_KEY    – Backend, ruft die Street View Metadata API auf. Verlaesst den Server nie,
@@ -127,6 +129,10 @@ function bearing(lat1, lng1, lat2, lng2) {
   return (Math.atan2(y, x) * (180 / Math.PI) + 360) % 360;
 }
 
+// Die Panorama-Suche schickt viele Anfragen parallel – ohne Keep-Alive kostet jede
+// einen eigenen TLS-Handshake.
+const googleAgent = new https.Agent({ keepAlive: true, maxSockets: 25 });
+
 // Street View Metadata abrufen – sucht Panorama im gegebenen Radius (in Metern)
 // source: 'default' (alle) | 'outdoor' (kein Indoor)
 // Bei OVER_QUERY_LIMIT: kurz warten und einmal wiederholen
@@ -135,7 +141,7 @@ function bearing(lat1, lng1, lat2, lng2) {
 async function fetchNearestPanorama(lat, lng, radiusMeters = 50000, source = 'default') {
   const doFetch = () => new Promise((resolve) => {
     const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=${radiusMeters}&source=${source}&key=${MAPS_KEY}`;
-    https.get(url, (res) => {
+    https.get(url, { agent: googleAgent }, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
@@ -183,10 +189,29 @@ async function fetchAutoHeading(lat, lng, pano_id) {
   return 0;
 }
 
+// Gefundenes Panorama um die Blickrichtung ergaenzen
+async function locateRound(base) {
+  return { ...base, heading: await fetchAutoHeading(base.lat, base.lng, base.pano_id) };
+}
+
 const TOTAL_ROUNDS = 5;
 
+// Ohne 0/O und 1/I/L – der Code wird vom Fernseher abgelesen und abgetippt
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
 function makeCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  let code;
+  do {
+    code = Array.from(crypto.randomBytes(5), (b) => CODE_CHARS[b % CODE_CHARS.length]).join('');
+  } while (sessions[code]);
+  return code;
+}
+
+const normalizeCode = (code) => String(code || '').trim().toUpperCase();
+
+// Namen landen in Listen und Karten-Labels aller Mitspieler – nur Text, begrenzte Laenge
+function cleanName(name) {
+  return typeof name === 'string' ? name.replace(/\s+/g, ' ').trim().slice(0, 20) : '';
 }
 
 const REGIONS_WELTWEIT = [
@@ -282,7 +307,26 @@ function boundsToPlayArea(cb) {
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const jitter = (v, span) => v + (Math.random() - 0.5) * span;
 
-// Liefert pro Versuch einen Suchpunkt samt Suchradius in Metern
+// Suchpunkte im offenen Wasser gar nicht erst abfragen (siehe landMask.js). Findet sich
+// in 200 Zuegen kein Punkt an Land, ist das Gebiet laut Maske reines Wasser – etwa eine
+// kleine Insel, die in den groben Kuestendaten fehlt. Dann ab sofort ungefiltert suchen.
+function onLand(nextSeed) {
+  let masked = true;
+  return () => {
+    if (masked) {
+      for (let i = 0; i < 200; i++) {
+        const seed = nextSeed();
+        if (isNearLand(seed.lat, seed.lng)) return seed;
+      }
+      masked = false;
+    }
+    return nextSeed();
+  };
+}
+
+// Liefert pro Versuch einen Suchpunkt samt Suchradius in Metern.
+// Beruehmt/Grossstaedte streuen nur wenige Kilometer um Punkte an Land – dort braucht es
+// keine Maske, die Kuestendaten waeren auf diese Entfernung ohnehin zu grob.
 function seedGenerator(mode, customBounds) {
   if (mode === 'beruehmt') {
     // Leicht streuen: direkt am Wahrzeichen ist fast immer ein Nutzer-Panorama das
@@ -304,27 +348,29 @@ function seedGenerator(mode, customBounds) {
     // landen meist ausserhalb und verbrennen nur Versuche.
     const halfDiagonalM = distanceKm(south, west, north, east) * 500;
     const radius = Math.round(Math.min(10000, Math.max(50, halfDiagonalM)));
-    return () => ({
+    return onLand(() => ({
       lat: south + Math.random() * (north - south),
       // Nach Schwenken ueber die Datumsgrenze liefert Leaflet Laengen jenseits ±180,
       // darauf antwortet Google nur mit NOT_FOUND.
       lng: normalizeLng(west + Math.random() * (east - west)),
       radius,
-    });
+    }));
   }
   const regions = mode === 'europa' ? REGIONS_EUROPA : REGIONS_WELTWEIT;
-  return () => {
+  return onLand(() => {
     const r = pick(regions);
     return {
       lat: r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]),
       lng: r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]),
       radius: 10000,
     };
-  };
+  });
 }
 
 // Warum taugt der Treffer nicht? null = passt.
-function rejectReason(meta, seed, playArea, googleOnly, usedPanos) {
+// radius = tatsaechlich verwendeter Suchradius; seed.radius (modusabhaengig) bestimmt
+// weiterhin den Mindestabstand zu frueheren Orten.
+function rejectReason(meta, seed, radius, playArea, googleOnly, usedPanos) {
   if (meta.status !== 'OK' || !meta.pano_id) {
     return `kein Panorama bei (${seed.lat.toFixed(3)}, ${seed.lng.toFixed(3)})`;
   }
@@ -332,8 +378,8 @@ function rejectReason(meta, seed, playArea, googleOnly, usedPanos) {
   // Google liefert vereinzelt Panoramen weit jenseits des Radius (beobachtet: 470 km
   // bei 5 km Radius) – falsch verortete Nutzer-Uploads.
   const distM = distanceKm(seed.lat, seed.lng, lat, lng) * 1000;
-  if (distM > seed.radius * 1.1 + 50) {
-    return `Panorama ${Math.round(distM)} m vom Suchpunkt, Radius nur ${seed.radius} m`;
+  if (distM > radius * 1.1 + 50) {
+    return `Panorama ${Math.round(distM)} m vom Suchpunkt, Radius nur ${radius} m`;
   }
   // Der Suchradius reicht ueber den Gebietsrand hinaus – der Treffer selbst muss drin liegen
   if (!isInsidePlayArea(lat, lng, playArea)) {
@@ -357,28 +403,56 @@ function rejectReason(meta, seed, playArea, googleOnly, usedPanos) {
   return null;
 }
 
+// Die Metadata-API liefert zu einem Punkt immer das *naechstgelegene* Panorama. Mit
+// grossem Suchradius gewinnt damit jedes Panorama mit der Flaeche, der es am naechsten
+// liegt: ein einsamer Feldweg hat Quadratkilometer fuer sich, eine Stadtstrasse ein paar
+// hundert Quadratmeter – es kam fast immer Land heraus. Eine Liste aller Panoramen zum
+// Ziehen bietet Google nicht an.
+// Deshalb zuerst mit kleinem Radius suchen: ein Zufallspunkt trifft nur, wenn er direkt
+// an einer Strasse mit Aufnahmen liegt, jedes Panorama hat also ungefaehr dieselbe Chance
+// und Staedte mit ihren vielen Strassen kommen entsprechend oft dran. Das kostet mehr
+// Anfragen (gemessen bei 50 m: ~2 % Treffer weltweit, ~7 % Europa, in Staedten fast
+// jede), Metadata-Anfragen sind aber kostenlos und laufen parallel. Findet das nichts
+// (duenn abgedecktes Gebiet), folgt die Suche mit dem modusabhaengigen grossen Radius.
+const SEARCH_BATCH = 20;
+const SEARCH_PHASES = [
+  { name: 'Feinsuche', radius: 50, batches: 10 },
+  { name: 'Grobsuche', radius: null, batches: 2 }, // null = seed.radius
+];
+
 // usedPanos: [{ pano_id, lat, lng }] – bereits gespielte Orte dieses Spiels
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panorama = panoramaOptions(), usedPanos = [], maxTries = 40) {
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panorama = panoramaOptions(), usedPanos = []) {
   const { googleOnly, outdoorOnly } = panorama;
   const source = outdoorOnly ? 'outdoor' : 'default';
   const playArea = mode === 'custom' && customBounds ? boundsToPlayArea(customBounds) : null;
   const nextSeed = seedGenerator(mode, customBounds);
   const tag = `[${mode}${googleOnly ? ' · nur Google' : ''}${outdoorOnly ? ' · outdoor' : ''}]`;
 
-  for (let i = 0; i < maxTries; i++) {
-    const seed = nextSeed();
-    const meta = await fetchNearestPanorama(seed.lat, seed.lng, seed.radius, source);
-    const reason = rejectReason(meta, seed, playArea, googleOnly, usedPanos);
-    if (reason) {
-      console.log(`${tag} Versuch ${i + 1}: ${reason}`);
-      continue;
+  let requests = 0;
+  for (const phase of SEARCH_PHASES) {
+    for (let b = 0; b < phase.batches; b++) {
+      const seeds = Array.from({ length: SEARCH_BATCH }, nextSeed);
+      const metas = await Promise.all(seeds.map((s) =>
+        fetchNearestPanorama(s.lat, s.lng, phase.radius ?? s.radius, source)));
+      requests += seeds.length;
+
+      // Alle Suchpunkte sind unabhaengig gezogen – der erste brauchbare ist so zufaellig wie jeder andere
+      for (let i = 0; i < seeds.length; i++) {
+        const reason = rejectReason(metas[i], seeds[i], phase.radius ?? seeds[i].radius, playArea, googleOnly, usedPanos);
+        if (reason) {
+          // Leere Suchpunkte sind in der Feinsuche die Regel, nur echte Verwerfungen loggen
+          if (metas[i].status === 'OK') console.log(`${tag} ${phase.name}: ${reason}`);
+          continue;
+        }
+        const { lat, lng } = metas[i].location;
+        console.log(`${tag} Panorama bei (${lat.toFixed(4)}, ${lng.toFixed(4)}) – ${phase.name}, ${requests} Anfragen`);
+        return { lat, lng, pano_id: metas[i].pano_id, label: `${lat.toFixed(4)}, ${lng.toFixed(4)}` };
+      }
     }
-    const { lat, lng } = meta.location;
-    console.log(`${tag} Panorama bei (${lat.toFixed(4)}, ${lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
-    return { lat, lng, pano_id: meta.pano_id, label: `${lat.toFixed(4)}, ${lng.toFixed(4)}` };
+    console.log(`${tag} ${phase.name} ohne Treffer nach ${requests} Anfragen`);
   }
   const tips = [playArea && 'größeres Gebiet wählen', googleOnly && 'Nutzer-Panoramen zulassen'].filter(Boolean);
-  throw new Error(`Kein Street View gefunden (Modus "${mode}", ${maxTries} Versuche)${tips.length ? ` – ${tips.join(' oder ')}` : ''}`);
+  throw new Error(`Kein Street View gefunden (Modus "${mode}", ${requests} Anfragen)${tips.length ? ` – ${tips.join(' oder ')}` : ''}`);
 }
 
 function normalizeLng(lng) {
@@ -401,16 +475,13 @@ function isInsidePlayArea(lat, lng, playArea) {
 // Runde abschließen
 function finishRound(session, code) {
   if (session.phase !== 'game') return;
-
-  if (session.countdownTimer) {
-    clearTimeout(session.countdownTimer);
-    session.countdownTimer = null;
-  }
+  clearCountdown(session);
 
   const nonSpectators = session.players.filter((p) => !p.spectator);
 
   const results = nonSpectators.map((p) => {
-    const pin = session.pins[p.id];
+    // Gesetzt, aber nicht bestaetigt (Countdown abgelaufen, Host hat aufgeloest) zaehlt trotzdem
+    const pin = session.pins[p.id] || session.draftPins?.[p.id];
     const dist = pin
       ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
       : 99999;
@@ -436,6 +507,7 @@ function finishRound(session, code) {
     totalRounds: TOTAL_ROUNDS
   };
   session.currentRoundData = roundData;
+  session.history.push(roundData);
 
   io.to(code).emit('round-ended', roundData);
 }
@@ -445,18 +517,51 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
+function clearCountdown(session) {
+  clearTimeout(session.countdownTimer);
+  session.countdownTimer = null;
+  session.countdownEndsAt = null;
+}
+
+// Alles, was ein Client fuer die laufende Runde braucht – beim Rundenstart und beim
+// (Wieder-)Beitreten mitten in der Runde, damit Countdown und Pin-Stand stimmen.
+function gameState(session, socketId = null) {
+  const seats = session.players.filter((p) => !p.spectator);
+  return {
+    panoId: session.location.pano_id,
+    heading: session.location.heading,
+    mapBounds: session.mapBounds || null,
+    playArea: session.playArea || null,
+    round: session.round,
+    totalRounds: TOTAL_ROUNDS,
+    pinnedIds: seats.filter((p) => session.pins[p.id]).map((p) => p.id),
+    totalPlayers: seats.length,
+    countdownLeft: session.countdownEndsAt
+      ? Math.max(0, Math.ceil((session.countdownEndsAt - Date.now()) / 1000))
+      : null,
+    alreadyPinned: !!(socketId && session.pins[socketId]),
+  };
+}
+
+// Stand fuer (Wieder-)Beitretende: Phase, laufende Runde bzw. letztes Ergebnis und alle
+// bisherigen Runden – sonst ist die Zusammenfassung nach einem Reload leer.
+function sessionState(session, socketId) {
+  const state = { code: session.code, players: activePlayers(session), phase: session.phase, history: session.history };
+  if (session.phase === 'game' && session.location) state.game = gameState(session, socketId);
+  if (session.phase === 'results' && session.currentRoundData) state.roundData = session.currentRoundData;
+  return state;
+}
+
 async function doStartGame(session, code, mode, customBounds, panorama, pinCountdown) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
     session.leftThisRound = [];
     session.usedPanos = [];
+    session.history = [];
   }
 
-  if (session.countdownTimer) {
-    clearTimeout(session.countdownTimer);
-    session.countdownTimer = null;
-  }
+  clearCountdown(session);
 
   if (pinCountdown !== undefined) session.pinCountdown = pinCountdown;
 
@@ -466,8 +571,9 @@ async function doStartGame(session, code, mode, customBounds, panorama, pinCount
   if (panorama || !session.panorama) session.panorama = panoramaOptions(panorama);
   if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, session.panorama, session.usedPanos || []);
-  const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
+  const location = await locateRound(
+    await randomStreetViewLocation(gameMode, session.customBounds || null, session.panorama, session.usedPanos || [])
+  );
 
   const cb = session.customBounds;
   // mapBounds = Zoom-Hilfe fuer die Rate-Karte.
@@ -488,23 +594,18 @@ async function doStartGame(session, code, mode, customBounds, panorama, pinCount
   session.playArea = playArea;
 
   if (!session.usedPanos) session.usedPanos = [];
-  session.usedPanos.push({ pano_id: base.pano_id, lat: base.lat, lng: base.lng });
+  session.usedPanos.push({ pano_id: location.pano_id, lat: location.lat, lng: location.lng });
 
   session.round = (session.round || 0) + 1;
-  session.location = { ...base, heading };
+  session.location = location;
   session.phase = 'game';
   session.pins = {};
+  session.draftPins = {};
   session.readyPlayers = new Set();
   session.players.forEach((p) => { p.temporarilyGone = false; p.spectator = false; });
 
-  io.to(code).emit('game-started', {
-    panoId: session.location.pano_id,
-    heading: session.location.heading,
-    players: activePlayers(session),
-    mapBounds,
-    playArea,
-  });
-  console.log('game started:', code, base.label);
+  io.to(code).emit('game-started', { ...gameState(session), players: activePlayers(session) });
+  console.log('game started:', code, location.label);
 }
 
 // doStartGame kann scheitern (Google lehnt ab, kein Panorama gefunden). Ohne diesen
@@ -516,6 +617,8 @@ async function startGameSafe(session, code, mode, customBounds, panorama, pinCou
   // doppeltem Ort, und die Runde zaehlte zweimal hoch.
   if (session.starting) return;
   session.starting = true;
+  // Alle Clients zeigen "Suche Ort…" – auch wenn der Start automatisch (alle bereit) kam
+  io.to(code).emit('game-loading');
   try {
     await doStartGame(session, code, mode, customBounds, panorama, pinCountdown);
   } catch (err) {
@@ -523,8 +626,12 @@ async function startGameSafe(session, code, mode, customBounds, panorama, pinCou
     if (isGoogle) console.error(`[game] Google Maps ${err.status}: ${err.message}\n${SETUP_HINT}`);
     else console.error('[game] Rundenstart fehlgeschlagen:', err.message);
 
-    // Session bleibt in der Lobby, damit der Host es erneut versuchen kann
-    session.phase = 'lobby';
+    // Phase bleibt, wie sie war (Lobby oder Ergebnis der letzten Runde) – von dort kann
+    // es erneut versucht werden. Frueher sprang sie hier auf 'lobby': mitten im Spiel
+    // hingen die Spieler dann auf der Ergebnisseite und "Bereit" wurde ignoriert.
+    // "Bereit" zuruecksetzen, damit ein erneutes Bereit-Melden wieder einen Start ausloest.
+    session.readyPlayers = new Set();
+    io.to(code).emit('ready-updated', []);
     io.to(code).emit('game-error', {
       message: isGoogle
         ? `Google Maps lehnt die Anfrage ab (${err.status}): ${err.message}`
@@ -565,8 +672,7 @@ app.get('/api/solo/start-round', async (req, res) => {
     } catch (_) {}
   }
   try {
-    const base = await randomStreetViewLocation(mode, customBounds, panorama, usedPanos);
-    const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
+    const loc = await locateRound(await randomStreetViewLocation(mode, customBounds, panorama, usedPanos));
 
     let mapBounds = null;
     let playArea = null;
@@ -578,9 +684,9 @@ app.get('/api/solo/start-round', async (req, res) => {
     }
 
     res.json({
-      panoId: base.pano_id,
-      heading,
-      location: { lat: base.lat, lng: base.lng, label: base.label },
+      panoId: loc.pano_id,
+      heading: loc.heading,
+      location: { lat: loc.lat, lng: loc.lng, label: loc.label },
       mapBounds,
       playArea,
     });
@@ -603,7 +709,7 @@ io.on('connection', (socket) => {
   // Session erstellen (Host) – kein Name nötig
   socket.on('create-session', (_, cb) => {
     const code = makeCode();
-    const hostSecret = Math.random().toString(36).substring(2, 18);
+    const hostSecret = crypto.randomBytes(16).toString('hex');
     sessions[code] = {
       code,
       host: socket.id,
@@ -613,6 +719,8 @@ io.on('connection', (socket) => {
       phase: 'lobby',
       location: null,
       pins: {},
+      draftPins: {},
+      history: [],
       round: 0,
       usedPanos: [],
       pinCountdown: 30,
@@ -624,10 +732,15 @@ io.on('connection', (socket) => {
   });
 
   // Session beitreten
-  socket.on('join-session', ({ code, name }, cb) => {
+  socket.on('join-session', ({ code, name } = {}, cb) => {
+    code = normalizeCode(code);
+    name = cleanName(name);
     const session = sessions[code];
-    if (!session) return cb({ error: 'Session nicht gefunden' });
-    if (session.players.some((p) => p.name === name)) return cb({ error: 'Name bereits vergeben' });
+    if (!session) return cb({ error: `Keine Session mit dem Code „${code}“ gefunden` });
+    if (!name) return cb({ error: 'Bitte Namen eingeben' });
+    if (session.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+      return cb({ error: 'Name bereits vergeben' });
+    }
 
     const isSpectator = session.phase !== 'lobby';
     const player = { id: socket.id, name, score: 0 };
@@ -638,14 +751,7 @@ io.on('connection', (socket) => {
     socket.data.name = name;
 
     io.to(code).emit('players-updated', activePlayers(session));
-    const resp = { code, players: activePlayers(session), isHost: false, spectator: isSpectator };
-    if (isSpectator && session.phase === 'game' && session.location) {
-      resp.panoId = session.location.pano_id;
-      resp.heading = session.location.heading;
-      resp.mapBounds = session.mapBounds || null;
-      resp.playArea = session.playArea || null;
-    }
-    cb(resp);
+    cb({ ...sessionState(session, socket.id), isHost: false, name, spectator: isSpectator });
     console.log(`${name} joined ${code}${isSpectator ? ' (spectator)' : ''}`);
   });
 
@@ -668,18 +774,8 @@ io.on('connection', (socket) => {
       socket.join(code);
       socket.data.code = code;
 
-      const resp = { code, players: activePlayers(session), phase: session.phase };
-      if (session.phase === 'game' && session.location) {
-        resp.panoId = session.location.pano_id;
-        resp.heading = session.location.heading;
-        resp.mapBounds = session.mapBounds || null;
-      resp.playArea = session.playArea || null;
-      }
-      if (session.phase === 'results' && session.currentRoundData) {
-        resp.roundData = session.currentRoundData;
-      }
       console.log('host rejoined:', code);
-      return cb(resp);
+      return cb(sessionState(session, socket.id));
     }
 
     // Spieler-Rejoin: Timer stoppen oder Spieler aus leftThisRound wiederholen
@@ -696,9 +792,11 @@ io.on('connection', (socket) => {
     if (player) {
       // Spieler ist noch drin (temporarilyGone), Socket aktualisieren
       const oldId = player.id;
-      if (session.pins[oldId]) {
-        session.pins[socket.id] = session.pins[oldId];
-        delete session.pins[oldId];
+      for (const pins of [session.pins, session.draftPins || {}]) {
+        if (pins[oldId]) {
+          pins[socket.id] = pins[oldId];
+          delete pins[oldId];
+        }
       }
       player.id = socket.id;
       player.temporarilyGone = false;
@@ -717,22 +815,8 @@ io.on('connection', (socket) => {
     socket.data.code = code;
     socket.data.name = name;
 
-    const resp = {
-      code, players: activePlayers(session), phase: session.phase, isHost: false, name
-    };
-    if (session.phase === 'game' && session.location) {
-      resp.panoId = session.location.pano_id;
-      resp.heading = session.location.heading;
-      resp.alreadyPinned = !!session.pins[socket.id];
-      resp.mapBounds = session.mapBounds || null;
-      resp.playArea = session.playArea || null;
-    }
-    if (session.phase === 'results' && session.currentRoundData) {
-      resp.roundData = session.currentRoundData;
-    }
-
     io.to(code).emit('players-updated', activePlayers(session));
-    cb(resp);
+    cb({ ...sessionState(session, socket.id), isHost: false, name, spectator: !!player.spectator });
     console.log('player rejoined:', name, code);
   });
 
@@ -767,7 +851,7 @@ io.on('connection', (socket) => {
   });
 
   // Spieler setzt Pin (Host + Spectators nehmen nicht teil)
-  socket.on('place-pin', ({ lat, lng }) => {
+  socket.on('place-pin', ({ lat, lng, draft } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.phase !== 'game') return;
@@ -777,6 +861,14 @@ io.on('connection', (socket) => {
     if (typeof lat !== 'number' || typeof lng !== 'number' || !isFinite(lat) || !isFinite(lng)) return;
     if (!isInsidePlayArea(lat, lng, session.playArea)) {
       console.warn(`[game] Pin ausserhalb des Spielgebiets verworfen (${placing?.name}: ${lat}, ${lng})`);
+      return;
+    }
+
+    // Vorgemerkt (Karte angetippt, noch nicht bestaetigt): zaehlt nur, falls die Runde
+    // endet, bevor bestaetigt wurde – sonst ginge der Pin beim Countdown-Ende verloren.
+    if (draft) {
+      if (!session.draftPins) session.draftPins = {};
+      session.draftPins[socket.id] = { lat, lng };
       return;
     }
 
@@ -791,6 +883,7 @@ io.on('connection', (socket) => {
     // Countdown starten wenn erster Pin und Countdown-Setting aktiv
     const isFirstPin = pinCount === 1;
     if (isFirstPin && session.pinCountdown > 0 && !session.countdownTimer) {
+      session.countdownEndsAt = Date.now() + session.pinCountdown * 1000;
       session.countdownTimer = setTimeout(() => {
         session.countdownTimer = null;
         finishRound(session, code);
@@ -803,6 +896,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Host loest die Runde vorzeitig auf – z. B. wenn ein Handy eingeschlafen ist und sonst
+  // alle bis zum Ende der Reconnect-Frist warten muessten. Vorgemerkte Pins zaehlen.
+  socket.on('end-round', () => {
+    const code = socket.data.code;
+    const session = sessions[code];
+    if (!session || session.host !== socket.id) return;
+    finishRound(session, code);
+  });
+
   // Lobby verlassen (Zurueck-Button). Host → Session aufloesen, alle Spieler landen
   // auf der Startseite. Spieler → nur sich selbst austragen.
   socket.on('leave-session', () => {
@@ -813,7 +915,7 @@ io.on('connection', (socket) => {
     if (!session) return;
 
     if (session.host === socket.id) {
-      if (session.countdownTimer) clearTimeout(session.countdownTimer);
+      clearCountdown(session);
       delete sessions[code];
       io.to(code).emit('host-left');
       console.log('host left (lobby):', code);
@@ -830,9 +932,11 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    if (session.countdownTimer) { clearTimeout(session.countdownTimer); session.countdownTimer = null; }
+    clearCountdown(session);
     session.phase = 'lobby';
     session.pins = {};
+    session.draftPins = {};
+    session.history = [];
     session.location = null;
     session.round = 0;
     session.leftThisRound = [];
@@ -921,6 +1025,8 @@ io.on('connection', (socket) => {
             p.id === leavingPlayer.id ? { ...p, left: true } : p
           )
         };
+        // Letzter History-Eintrag ist in der Ergebnisphase genau diese Runde
+        sess.history[sess.history.length - 1] = sess.currentRoundData;
         io.to(code).emit('results-updated', sess.currentRoundData);
       }
 

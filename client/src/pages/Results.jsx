@@ -1,12 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import socket from '../socket.js';
+import { escapeHtml, formatDistance } from '../format.js';
+import { nearestWorldCopy } from '../playArea.js';
 
-export default function Results({ results, session, onNextRound, onNewGame, onShowSummary }) {
+export default function Results({ results, session, onNextRound, onShowSummary }) {
   const mapRef = useRef(null);
   const leafletMap = useRef(null);
   const [readyIds, setReadyIds] = useState([]);
   const [isReady, setIsReady] = useState(false);
+  // Naechster Ort wird gesucht (dauert bis zu ~2 s) bzw. Suche fehlgeschlagen
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   const { results: players, location, round, totalRounds } = results;
   const activePlayers = players.filter((p) => !p.left);
@@ -14,12 +19,23 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
   const totalCount = activePlayers.length;
 
   useEffect(() => {
-    socket.on('ready-updated', (ids) => setReadyIds(ids));
-    return () => socket.off('ready-updated');
+    const onReady = (ids) => setReadyIds(ids);
+    const onLoading = () => { setLoading(true); setError(null); };
+    // Server hat "Bereit" zurueckgesetzt – erneutes Bereit-Melden startet einen neuen Versuch
+    const onError = ({ message }) => { setLoading(false); setIsReady(false); setError(message); };
+    socket.on('ready-updated', onReady);
+    socket.on('game-loading', onLoading);
+    socket.on('game-error', onError);
+    return () => {
+      socket.off('ready-updated', onReady);
+      socket.off('game-loading', onLoading);
+      socket.off('game-error', onError);
+    };
   }, []);
 
   function handleReady() {
     setIsReady(true);
+    setError(null);
     socket.emit('player-ready');
   }
 
@@ -39,28 +55,30 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
       className: ''
     });
     L.marker([location.lat, location.lng], { icon: targetIcon })
-      .bindPopup(`<b>📍 Lösung:</b> ${location.label}`)
+      .bindPopup(`<b>📍 Lösung:</b> ${escapeHtml(location.label)}`)
       .addTo(leafletMap.current)
       .openPopup();
 
     players.forEach((p) => {
       if (!p.pin) return;
-      bounds.extend([p.pin.lat, p.pin.lng]);
+      const name = escapeHtml(p.name);
+      const pinPos = [p.pin.lat, nearestWorldCopy(p.pin.lng, location.lng)];
+      bounds.extend(pinPos);
       const playerIcon = L.divIcon({
         html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
           <div style="background:#4ade80;width:12px;height:12px;border-radius:50%;border:2px solid #fff;"></div>
-          <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;white-space:nowrap;margin-top:2px">${p.name}</div>
+          <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;white-space:nowrap;margin-top:2px">${name}</div>
         </div>`,
         iconSize: [80, 30],
         iconAnchor: [40, 6],
         className: ''
       });
-      L.marker([p.pin.lat, p.pin.lng], { icon: playerIcon })
-        .bindPopup(`<b>${p.name}</b><br>${p.dist} km entfernt`)
+      L.marker(pinPos, { icon: playerIcon })
+        .bindPopup(`<b>${name}</b><br>${formatDistance(p.dist)} entfernt`)
         .addTo(leafletMap.current);
 
       L.polyline(
-        [[location.lat, location.lng], [p.pin.lat, p.pin.lng]],
+        [[location.lat, location.lng], pinPos],
         { color: '#4ade80', dashArray: '6 4', weight: 2, opacity: 0.7 }
       ).addTo(leafletMap.current);
     });
@@ -76,7 +94,7 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
 
       <div ref={mapRef} style={{ flex: '0 0 40%' }} />
 
@@ -119,12 +137,12 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
                   )}
                 </div>
                 <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-                  {p.dist === 99999 ? 'Kein Pin' : `${p.dist.toLocaleString()} km entfernt`}
+                  {p.pin ? `${formatDistance(p.dist)} entfernt` : 'Kein Pin'}
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 'bold', color: p.left ? '#555' : '#4ade80' }}>+{p.points} Pkt</div>
-                <div style={{ fontSize: '0.75rem', color: '#aaa' }}>Gesamt: {p.totalScore}</div>
+                <div style={{ fontWeight: 'bold', color: p.left ? '#555' : '#4ade80' }}>+{p.points.toLocaleString()} Pkt</div>
+                <div style={{ fontSize: '0.75rem', color: '#aaa' }}>Gesamt: {p.totalScore.toLocaleString()}</div>
               </div>
             </li>
           ))}
@@ -134,15 +152,29 @@ export default function Results({ results, session, onNextRound, onNewGame, onSh
           Runde {round} / {totalRounds}
         </p>
 
+        {error && (
+          <div style={{
+            background: 'rgba(248,113,113,0.12)', border: '1px solid #f87171',
+            borderRadius: 8, padding: '10px 14px', marginTop: 12,
+            fontSize: '0.8rem', color: '#f87171', lineHeight: 1.5,
+          }}>
+            ⚠️ Nächste Runde konnte nicht starten<br />{error}
+          </div>
+        )}
+
         {round < totalRounds && session.isHost && (
-          <button onClick={onNextRound} style={{ marginTop: 16 }}>
-            ▶ Nächste Runde
+          <button onClick={() => { setLoading(true); onNextRound(); }} disabled={loading} style={{ marginTop: 16 }}>
+            {loading ? '🔎 Suche nächsten Ort…' : '▶ Nächste Runde'}
           </button>
         )}
 
         {round < totalRounds && !session.isHost && (
           <div style={{ marginTop: 16 }}>
-            {!isReady ? (
+            {loading ? (
+              <div style={{ textAlign: 'center', color: '#aaa', padding: '12px 16px' }}>
+                🔎 Suche nächsten Ort…
+              </div>
+            ) : !isReady ? (
               <button
                 onClick={handleReady}
                 style={{ width: '100%', background: '#4ade80', color: '#111', fontWeight: 'bold' }}

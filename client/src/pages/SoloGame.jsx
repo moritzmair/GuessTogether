@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
-import { drawPlayArea, isInsidePlayArea, scorePoints, scoreExamples } from '../playArea.js';
+import { drawPlayArea, isInsidePlayArea, nearestWorldCopy, normalizeLng, scorePoints, scoreExamples } from '../playArea.js';
+import { escapeHtml, formatDistance } from '../format.js';
+import { loadSettings, saveSettings } from '../settings.js';
 
 const MODES = [
   { id: 'weltweit',    label: '🌍 Weltweit' },
@@ -40,10 +42,11 @@ function distanceKm(lat1, lng1, lat2, lng2) {
 
 export default function SoloGame({ onBack }) {
   // phases: 'setup' | 'loading' | 'playing' | 'roundResult' | 'summary'
+  const [settings]                          = useState(loadSettings);
   const [phase, setPhase]                   = useState('setup');
-  const [mode, setMode]                     = useState('weltweit');
-  const [panoramaSource, setPanoramaSource] = useState('google');
-  const [outdoorOnly, setOutdoorOnly]       = useState(true);
+  const [mode, setMode]                     = useState(settings.mode || 'weltweit');
+  const [panoramaSource, setPanoramaSource] = useState(settings.panoramaSource || 'google');
+  const [outdoorOnly, setOutdoorOnly]       = useState(settings.outdoorOnly ?? true);
   const [round, setRound]                   = useState(0);
   const [totalScore, setTotalScore]         = useState(0);
   const [history, setHistory]               = useState([]);
@@ -71,6 +74,13 @@ export default function SoloGame({ onBack }) {
   const customMapInstance = useRef(null);
   const pinRef            = useRef(null); // gleiche Ref für Click-Handler-Closure
   const usedPanosRef      = useRef([]);   // Orte dieses Spiels – der Server meidet sie
+  // Runde, die gerade geladen wird – "Erneut versuchen" muss genau diese laden. Vorher
+  // lud es die vorige Nummer erneut, dann wurden es insgesamt 6 Runden.
+  const loadingRoundRef   = useRef(1);
+
+  useEffect(() => {
+    saveSettings({ mode, panoramaSource, outdoorOnly });
+  }, [mode, panoramaSource, outdoorOnly]);
 
   // Custom-Bounds-Karte
   useEffect(() => {
@@ -83,7 +93,8 @@ export default function SoloGame({ onBack }) {
       return;
     }
     if (!customMapRef.current || customMapInstance.current) return;
-    const map = L.map(customMapRef.current).setView([50, 10], 5);
+    const view = loadSettings().customView;
+    const map = L.map(customMapRef.current).setView(view?.center || [50, 10], view?.zoom || 5);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap',
     }).addTo(map);
@@ -91,6 +102,8 @@ export default function SoloGame({ onBack }) {
     const syncArea = () => {
       const b = map.getBounds();
       setCustomArea([[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]]);
+      const c = map.getCenter();
+      saveSettings({ customView: { center: [c.lat, c.lng], zoom: map.getZoom() } });
     };
     map.on('moveend', syncArea);
     syncArea();
@@ -173,7 +186,8 @@ export default function SoloGame({ onBack }) {
         setTimeout(() => setAreaHint(false), 1800);
         return;
       }
-      pinRef.current = { lat, lng };
+      // Klick auf einer Nachbarkopie der Weltkarte liefert Laengen jenseits ±180
+      pinRef.current = { lat, lng: normalizeLng(lng) };
       setPin({ lat, lng });
       if (markerRef.current) markerRef.current.remove();
       markerRef.current = L.marker([lat, lng]).addTo(gameLeaflet.current);
@@ -204,12 +218,13 @@ export default function SoloGame({ onBack }) {
       className: '',
     });
     L.marker([loc.lat, loc.lng], { icon: targetIcon })
-      .bindPopup(`<b>📍 Lösung:</b> ${loc.label}`)
+      .bindPopup(`<b>📍 Lösung:</b> ${escapeHtml(loc.label)}`)
       .addTo(resultLeaflet.current)
       .openPopup();
 
     if (roundResult.pin) {
-      bounds.extend([roundResult.pin.lat, roundResult.pin.lng]);
+      const pinPos = [roundResult.pin.lat, nearestWorldCopy(roundResult.pin.lng, loc.lng)];
+      bounds.extend(pinPos);
       const playerIcon = L.divIcon({
         html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
           <div style="background:#4ade80;width:12px;height:12px;border-radius:50%;border:2px solid #fff;"></div>
@@ -219,12 +234,12 @@ export default function SoloGame({ onBack }) {
         iconAnchor: [40, 6],
         className: '',
       });
-      L.marker([roundResult.pin.lat, roundResult.pin.lng], { icon: playerIcon })
-        .bindPopup(`Dein Pin – ${roundResult.dist.toLocaleString(undefined, { maximumFractionDigits: 0 })} km`)
+      L.marker(pinPos, { icon: playerIcon })
+        .bindPopup(`Dein Pin – ${formatDistance(roundResult.dist)}`)
         .addTo(resultLeaflet.current);
 
       L.polyline(
-        [[loc.lat, loc.lng], [roundResult.pin.lat, roundResult.pin.lng]],
+        [[loc.lat, loc.lng], pinPos],
         { color: '#4ade80', dashArray: '6 4', weight: 2, opacity: 0.7 }
       ).addTo(resultLeaflet.current);
     }
@@ -239,6 +254,7 @@ export default function SoloGame({ onBack }) {
   // ─── Runde laden ──────────────────────────────────────────────────────────
   // customBoundsOverride: wird nur beim Erstaufruf übergeben (bevor Map zerstört wird)
   async function startRound(nextRound, customBoundsOverride = null) {
+    loadingRoundRef.current = nextRound;
     setPhase('loading');
     setLoadError(null);
     setPin(null);
@@ -258,7 +274,14 @@ export default function SoloGame({ onBack }) {
     }
 
     try {
-      const data = await fetch(url).then((r) => r.json());
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (_) {
+        throw new Error('Server nicht erreichbar – bitte Verbindung prüfen.');
+      }
+      // Ein Proxy-/Gateway-Fehler liefert HTML statt JSON – nicht als "Unexpected token" anzeigen
+      const data = await res.json().catch(() => ({ error: `Server-Fehler (HTTP ${res.status})` }));
       if (data.error) throw new Error(data.error);
       usedPanosRef.current.push({ pano_id: data.panoId, lat: data.location.lat, lng: data.location.lng });
       setCurrentRound(data);
@@ -450,7 +473,7 @@ export default function SoloGame({ onBack }) {
           <div className="card" style={{ textAlign: 'center', maxWidth: 360 }}>
             <div style={{ fontSize: '2rem', marginBottom: 12 }}>⚠️</div>
             <p style={{ color: '#f87171', marginBottom: 16 }}>{loadError}</p>
-            <button onClick={() => startRound(round || 1)} style={{ marginBottom: 8 }}>🔄 Erneut versuchen</button>
+            <button onClick={() => startRound(loadingRoundRef.current)} style={{ marginBottom: 8 }}>🔄 Erneut versuchen</button>
             <button onClick={onBack} style={{ background: '#2a2a3e' }}>← Zurück</button>
           </div>
         ) : (
@@ -600,11 +623,7 @@ export default function SoloGame({ onBack }) {
   if (phase === 'roundResult' && roundResult && currentRound) {
     const loc    = currentRound.location;
     const isLast = round >= TOTAL_ROUNDS;
-    const distFmt = roundResult.dist == null
-      ? null
-      : roundResult.dist < 1
-        ? `${Math.round(roundResult.dist * 1000)} m`
-        : `${roundResult.dist.toLocaleString(undefined, { maximumFractionDigits: 0 })} km`;
+    const distFmt = roundResult.dist == null ? null : formatDistance(roundResult.dist);
     const accent = roundResult.points >= 5000 ? '#4ade80' : '#4a9eff';
 
     return (
@@ -708,10 +727,7 @@ export default function SoloGame({ onBack }) {
 
           <ul style={{ listStyle: 'none', marginBottom: 24, padding: 0 }}>
             {history.map((h, i) => {
-              const df = h.dist == null ? null
-                : h.dist < 1
-                  ? `${Math.round(h.dist * 1000)} m`
-                  : `${h.dist.toLocaleString(undefined, { maximumFractionDigits: 0 })} km`;
+              const df = h.dist == null ? null : formatDistance(h.dist);
               return (
                 <li key={i} style={{
                   background: '#1a1a1a', border: '1px solid #333', borderRadius: 8,

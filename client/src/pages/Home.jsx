@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import socket from '../socket.js';
+import socket, { REQUEST_TIMEOUT_MS, OFFLINE_MSG } from '../socket.js';
 
 const ADJECTIVES = ['crazy', 'slow', 'fast', 'wild', 'lazy', 'tiny', 'brave', 'lucky', 'silly', 'sneaky', 'grumpy', 'happy', 'dark', 'bold', 'swift'];
 const ANIMALS = ['rabbit', 'horse', 'fox', 'bear', 'wolf', 'eagle', 'shark', 'tiger', 'panda', 'koala', 'lion', 'hawk', 'deer', 'duck', 'owl'];
@@ -13,6 +13,8 @@ function randomName() {
 export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo }) {
   const [name, setName] = useState(() => randomName());
   const [joinCode, setJoinCode] = useState('');
+  // Code-Eingabe auf der Startseite – ohne sie ging Beitreten nur per QR-Code oder Link
+  const [codeInput, setCodeInput] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -26,17 +28,31 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
     const matching = savedSessions.find((s) => s.code === upper && s.name);
     if (matching) {
       setLoading(true);
-      onRejoin(matching);
+      // Klappt das nicht (Reconnect-Frist abgelaufen), normal mit demselben Namen beitreten
+      onRejoin(matching, (msg) => {
+        setLoading(false);
+        setName(matching.name);
+        setJoinCode(upper);
+        setError(msg);
+      });
       return;
     }
 
     setJoinCode(upper);
   }, []);
 
+  function rejoin(saved) {
+    setLoading(true);
+    setError('');
+    onRejoin(saved, (msg) => { setLoading(false); setError(msg); });
+  }
+
   function createSession() {
     setLoading(true);
-    socket.emit('create-session', {}, (res) => {
+    setError('');
+    socket.timeout(REQUEST_TIMEOUT_MS).emit('create-session', {}, (err, res) => {
       setLoading(false);
+      if (err) return setError(OFFLINE_MSG);
       if (res.error) return setError(res.error);
       onJoined({ ...res, isHost: true });
     });
@@ -45,11 +61,26 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
   function joinSession() {
     if (!name.trim()) return setError('Bitte Namen eingeben');
     setLoading(true);
-    socket.emit('join-session', { name: name.trim(), code: joinCode }, (res) => {
+    setError('');
+    socket.timeout(REQUEST_TIMEOUT_MS).emit('join-session', { name: name.trim(), code: joinCode }, (err, res) => {
       setLoading(false);
+      if (err) return setError(OFFLINE_MSG);
       if (res.error) return setError(res.error);
-      onJoined({ ...res, isHost: false, name: name.trim() });
+      onJoined({ ...res, isHost: false, name: res.name });
     });
+  }
+
+  function enterCode() {
+    const code = codeInput.trim().toUpperCase();
+    if (!code) return setError('Bitte den Code vom Bildschirm eingeben');
+    setError('');
+    setJoinCode(code);
+  }
+
+  function backToStart() {
+    setJoinCode('');
+    setError('');
+    window.history.replaceState(null, '', window.location.pathname);
   }
 
   if (loading) {
@@ -67,7 +98,9 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
           <div style={{ textAlign: 'center', marginBottom: 24 }}>
             <div style={{ fontSize: '2.5rem', marginBottom: 8 }}>🌍</div>
             <h1 style={{ margin: 0, fontSize: '1.8rem' }}>GuessTogether</h1>
-            <p style={{ color: '#aaa', fontSize: '0.9rem', marginTop: 6 }}>Du wurdest eingeladen!</p>
+            <p style={{ color: '#aaa', fontSize: '0.9rem', marginTop: 6 }}>
+              Session <strong style={{ color: '#4ade80', letterSpacing: 2 }}>{joinCode}</strong> beitreten
+            </p>
           </div>
 
           <label>Dein Name</label>
@@ -75,6 +108,7 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
             <input
               value={name}
               onChange={(e) => { setName(e.target.value); setError(''); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') joinSession(); }}
               placeholder="Spielername"
               maxLength={20}
               style={{ flex: 1, margin: 0 }}
@@ -91,13 +125,19 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
 
           <button
             onClick={joinSession}
-            disabled={loading}
             style={{ width: '100%', marginTop: 16, fontSize: '1.05rem', padding: '13px', background: '#4a9eff' }}
           >
-            {loading ? 'Beitreten...' : '🚀 Beitreten'}
+            🚀 Beitreten
           </button>
 
           {error && <p className="error">{error}</p>}
+
+          <button
+            onClick={backToStart}
+            style={{ width: '100%', marginTop: 12, background: '#2a2a3e', color: '#bbb', fontWeight: 'normal', fontSize: '0.9rem' }}
+          >
+            ← Zur Startseite
+          </button>
         </div>
       </div>
     );
@@ -136,7 +176,7 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
                     </span>
                   </div>
                   <button
-                    onClick={() => { setLoading(true); onRejoin(s); }}
+                    onClick={() => rejoin(s)}
                     style={{ margin: 0, padding: '6px 14px', background: '#4ade80', color: '#111', fontWeight: 'bold', fontSize: '0.8rem', width: 'auto', flexShrink: 0 }}
                   >
                     Beitreten
@@ -152,7 +192,6 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
           {/* Solo */}
           <button
             onClick={onSolo}
-            disabled={loading}
             style={{
               width: '100%', fontSize: '1.05rem', padding: '14px',
               background: 'linear-gradient(135deg, #6c3fd4 0%, #4a9eff 100%)',
@@ -169,7 +208,6 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
           {/* Multiplayer */}
           <button
             onClick={createSession}
-            disabled={loading}
             style={{
               width: '100%', fontSize: '1.05rem', padding: '14px', background: '#4a9eff',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10
@@ -177,11 +215,33 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
           >
             <span style={{ fontSize: '1.3rem' }}>🖥️</span>
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontWeight: 'bold' }}>{loading ? 'Erstelle Session...' : 'Multiplayer – Session erstellen'}</div>
+              <div style={{ fontWeight: 'bold' }}>Multiplayer – Session erstellen</div>
               <div style={{ fontSize: '0.75rem', opacity: 0.85, fontWeight: 'normal' }}>Host am großen Bildschirm, Spieler per Handy</div>
             </div>
           </button>
+
+          {/* Mitspielen per Code */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={codeInput}
+              onChange={(e) => { setCodeInput(e.target.value.toUpperCase()); setError(''); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') enterCode(); }}
+              placeholder="Code vom Bildschirm"
+              maxLength={8}
+              autoCapitalize="characters"
+              autoComplete="off"
+              style={{ flex: 1, margin: 0, letterSpacing: codeInput ? 3 : 0, textTransform: 'uppercase' }}
+            />
+            <button
+              onClick={enterCode}
+              style={{ margin: 0, width: 'auto', flexShrink: 0, background: '#2a2a3e', color: '#fff' }}
+            >
+              Mitspielen
+            </button>
+          </div>
         </div>
+
+        {error && <p className="error" style={{ marginBottom: 12 }}>{error}</p>}
 
         {/* Multiplayer-Anleitung */}
         <div style={{ background: '#1a1a2e', borderRadius: 12, padding: 16, marginBottom: 8 }}>
@@ -191,7 +251,7 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
               { icon: '📺', text: 'Session auf großem Bildschirm erstellen (TV, Laptop, Tablet)' },
-              { icon: '📱', text: 'QR-Code scannen oder Link teilen – Spieler treten bei' },
+              { icon: '📱', text: 'QR-Code scannen, Link teilen oder Code eingeben – Spieler treten bei' },
               { icon: '▶️', text: 'Host startet die Runde und steuert das Spiel' },
               { icon: '📍', text: 'Spieler tippen auf die Karte, wo sie den Ort vermuten' },
             ].map((step, i) => (
@@ -202,8 +262,6 @@ export default function Home({ onJoined, savedSessions = [], onRejoin, onSolo })
             ))}
           </div>
         </div>
-
-        {error && <p className="error">{error}</p>}
       </div>
     </div>
   );
