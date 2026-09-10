@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { loadGoogleMaps, onGoogleAuthFailure } from '../googleMaps.js';
-import { drawPlayArea, isInsidePlayArea } from '../playArea.js';
+import { drawPlayArea, isInsidePlayArea, scorePoints, scoreExamples } from '../playArea.js';
 
 const MODES = [
   { id: 'weltweit',    label: '🌍 Weltweit' },
@@ -12,10 +12,9 @@ const MODES = [
   { id: 'custom',      label: '✏️ Custom' },
 ];
 
-const PANORAMA_FILTERS = [
-  { id: 'all',         label: '🌐 Alle Panoramen',        desc: 'Straße, Indoor, Nutzer-Fotos' },
-  { id: 'outdoor',     label: '🚶 Kein Indoor',            desc: 'Nur Außenaufnahmen' },
-  { id: 'google_only', label: '🚗 Nur Google Street View', desc: 'Offizielles Google-Kameramobil' },
+const PANORAMA_SOURCES = [
+  { id: 'google', label: '🚗 Nur Google Street View', desc: 'Offizielle Aufnahmen, korrekt verortet' },
+  { id: 'all',    label: '👥 Auch Nutzer-Panoramen',  desc: 'Mehr Orte, oft falsch verortet' },
 ];
 
 const TOTAL_ROUNDS = 5;
@@ -43,7 +42,8 @@ export default function SoloGame({ onBack }) {
   // phases: 'setup' | 'loading' | 'playing' | 'roundResult' | 'summary'
   const [phase, setPhase]                   = useState('setup');
   const [mode, setMode]                     = useState('weltweit');
-  const [panoramaFilter, setPanorama]       = useState('all');
+  const [panoramaSource, setPanoramaSource] = useState('google');
+  const [outdoorOnly, setOutdoorOnly]       = useState(true);
   const [round, setRound]                   = useState(0);
   const [totalScore, setTotalScore]         = useState(0);
   const [history, setHistory]               = useState([]);
@@ -55,6 +55,8 @@ export default function SoloGame({ onBack }) {
   // Custom-Bounds werden beim Start einmalig gespeichert, damit alle Folgerunden
   // dieselben Bounds nutzen – auch nachdem die Custom-Map-Instanz zerstört wurde.
   const [savedCustomBounds, setSavedCustomBounds] = useState(null);
+  // Aktueller Ausschnitt der Custom-Karte – nur fuer die Punkte-Beispiele im Setup
+  const [customArea, setCustomArea]         = useState(null);
   const [areaHint, setAreaHint]             = useState(false);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
 
@@ -68,6 +70,7 @@ export default function SoloGame({ onBack }) {
   const customMapRef      = useRef(null);
   const customMapInstance = useRef(null);
   const pinRef            = useRef(null); // gleiche Ref für Click-Handler-Closure
+  const usedPanosRef      = useRef([]);   // Orte dieses Spiels – der Server meidet sie
 
   // Custom-Bounds-Karte
   useEffect(() => {
@@ -85,6 +88,12 @@ export default function SoloGame({ onBack }) {
       attribution: '© OpenStreetMap',
     }).addTo(map);
     customMapInstance.current = map;
+    const syncArea = () => {
+      const b = map.getBounds();
+      setCustomArea([[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]]);
+    };
+    map.on('moveend', syncArea);
+    syncArea();
     return () => {
       if (customMapInstance.current) {
         customMapInstance.current.remove();
@@ -239,14 +248,19 @@ export default function SoloGame({ onBack }) {
 
     // Folgerunden: gespeicherte Bounds aus State verwenden
     const cb = customBoundsOverride ?? savedCustomBounds;
-    let url = `/api/solo/start-round?mode=${mode}&panoramaFilter=${panoramaFilter}`;
+    let url = `/api/solo/start-round?mode=${mode}`
+      + `&googleOnly=${panoramaSource === 'google' ? 1 : 0}&outdoorOnly=${outdoorOnly ? 1 : 0}`;
     if (mode === 'custom' && cb) {
       url += `&customBounds=${encodeURIComponent(JSON.stringify(cb))}`;
+    }
+    if (usedPanosRef.current.length) {
+      url += `&used=${encodeURIComponent(JSON.stringify(usedPanosRef.current))}`;
     }
 
     try {
       const data = await fetch(url).then((r) => r.json());
       if (data.error) throw new Error(data.error);
+      usedPanosRef.current.push({ pano_id: data.panoId, lat: data.location.lat, lng: data.location.lng });
       setCurrentRound(data);
       setRound(nextRound);
       setPhase('playing');
@@ -263,6 +277,7 @@ export default function SoloGame({ onBack }) {
       cb = { lat: [b.getSouth(), b.getNorth()], lng: [b.getWest(), b.getEast()] };
     }
     setSavedCustomBounds(cb);
+    usedPanosRef.current = [];
     setRound(0);
     setTotalScore(0);
     setHistory([]);
@@ -273,7 +288,7 @@ export default function SoloGame({ onBack }) {
     const p = pinRef.current;
     const loc = currentRound.location;
     const dist = p ? distanceKm(loc.lat, loc.lng, p.lat, p.lng) : null;
-    const points = p ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
+    const points = p ? scorePoints(dist, currentRound.playArea) : 0;
     const newTotal = totalScore + points;
     setTotalScore(newTotal);
     const entry = { round, dist, points, totalScore: newTotal, pin: p, location: loc };
@@ -353,27 +368,36 @@ export default function SoloGame({ onBack }) {
             </div>
           </div>
 
-          {/* Panorama-Filter */}
+          {/* Panorama-Quelle */}
           <div style={{ marginBottom: 16 }}>
-            <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Panorama-Filter</p>
+            <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Panorama-Quelle</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {PANORAMA_FILTERS.map((f) => (
+              {PANORAMA_SOURCES.map((f) => (
                 <button
                   key={f.id}
-                  onClick={() => setPanorama(f.id)}
+                  onClick={() => setPanoramaSource(f.id)}
                   style={{
                     margin: 0, padding: '8px 12px', fontSize: '0.82rem', textAlign: 'left',
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    background: panoramaFilter === f.id ? '#4a9eff' : '#2a2a2a',
+                    background: panoramaSource === f.id ? '#4a9eff' : '#2a2a2a',
                     color: '#fff',
-                    border: panoramaFilter === f.id ? 'none' : '1px solid #444',
+                    border: panoramaSource === f.id ? 'none' : '1px solid #444',
                   }}
                 >
-                  <span style={{ fontWeight: panoramaFilter === f.id ? 700 : 400 }}>{f.label}</span>
+                  <span style={{ fontWeight: panoramaSource === f.id ? 700 : 400 }}>{f.label}</span>
                   <span style={{ fontSize: '0.7rem', opacity: 0.7, marginLeft: 8 }}>{f.desc}</span>
                 </button>
               ))}
             </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', margin: '8px 0 0' }}>
+              <input
+                type="checkbox"
+                checked={outdoorOnly}
+                onChange={(e) => setOutdoorOnly(e.target.checked)}
+                style={{ width: 'auto', margin: 0 }}
+              />
+              <span style={{ fontSize: '0.85rem', color: '#ccc' }}>🚪 Keine Indoor-Aufnahmen</span>
+            </label>
           </div>
 
           {/* Custom Map */}
@@ -398,7 +422,10 @@ export default function SoloGame({ onBack }) {
             {' '}· Street View · Pin auf der Karte setzen
             <br />
             <span style={{ fontSize: '0.78rem' }}>
-              📊 <strong style={{ color: '#bbb' }}>Punkte:</strong> 10.000 ÷ (1 + km/10) &nbsp;·&nbsp; 0 km → 10.000 &nbsp;·&nbsp; 10 km → ~5.000 &nbsp;·&nbsp; 100 km → ~1.000
+              📊 <strong style={{ color: '#bbb' }}>Punkte:</strong> ≤ 10 m → 10.000
+              {scoreExamples(mode === 'custom' ? customArea : null)
+                .map((e) => `  ·  ${e.label} → ${e.points.toLocaleString()}`)}
+              {mode === 'custom' && <><br />Maßstab passt sich dem gewählten Ausschnitt an</>}
             </span>
           </div>
 

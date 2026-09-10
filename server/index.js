@@ -92,6 +92,30 @@ function distanceKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Punkte fuer einen Pin: bis 10 m volle 10.000, danach exponentiell fallend:
+// 10.000 · e^(−km / scaleKm). Die Kurve bleibt lange hoch und faellt erst bei grossen
+// Fehlern steil ab – das richtige Land zu treffen zaehlt, der falsche Kontinent kaum.
+// scaleKm ist wie bei GeoGuessr ein Zehntel der Gebietsgroesse: weltweit 1.500 km
+// (500 km → ~7.200, 1.500 km → ~3.700), im Custom-Gebiet ein Zehntel der Diagonale –
+// sonst laege in einer Stadt jeder Pin bei ueber 9.900. Gleiche Formel in client/src/playArea.js.
+const WORLD_SCALE_KM = 1500;
+
+function scoreScaleKm(playArea) {
+  if (!playArea) return WORLD_SCALE_KM;
+  const [[south, west], [north, east]] = playArea;
+  // Aequirektangulaer statt Haversine: bleibt auch bei Gebieten ueber die Datumsgrenze
+  // oder mit mehr als 180° Breite richtig
+  const midLat = ((south + north) / 2) * Math.PI / 180;
+  const latKm = Math.abs(north - south) * 111.32;
+  const lngKm = Math.min(Math.abs(east - west), 360) * 111.32 * Math.cos(midLat);
+  return Math.min(WORLD_SCALE_KM, Math.max(0.2, Math.hypot(latKm, lngKm) / 10));
+}
+
+function scorePoints(km, playArea) {
+  const scaleKm = scoreScaleKm(playArea);
+  return Math.max(1, Math.round(10000 * Math.exp(-Math.max(0, km - 0.01) / scaleKm)));
+}
+
 // Kompassrichtung von (lat1,lng1) nach (lat2,lng2) in Grad
 function bearing(lat1, lng1, lat2, lng2) {
   const toRad = (d) => (d * Math.PI) / 180;
@@ -234,77 +258,143 @@ const CITIES = [
   [35.6892,51.389],[41.0082,28.9784],[55.7558,37.6173],[50.45,30.5234],[44.8176,20.4633],
 ];
 
-// panoramaFilter: 'all' | 'outdoor' | 'google_only'
-async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panoramaFilter = 'all', usedPanoIds = new Set(), maxTries = 40) {
-  // 'outdoor' und 'google_only' schließen Indoor-Panoramen per API-Source-Parameter aus
-  const source = (panoramaFilter === 'outdoor' || panoramaFilter === 'google_only') ? 'outdoor' : 'default';
+// Panorama-Auswahl des Hosts. Fehlt ein Wert, gilt die strenge Variante.
+//   googleOnly  – nur offizielle Google-Aufnahmen, keine Nutzer-Uploads
+//   outdoorOnly – keine Indoor-Panoramen (per source=outdoor der Metadata-API)
+function panoramaOptions({ googleOnly, outdoorOnly } = {}) {
+  return { googleOnly: googleOnly !== false, outdoorOnly: outdoorOnly !== false };
+}
 
+// Offizielle Google-Aufnahme oder Nutzer-Upload (Photosphere)? Die Metadata-API kann
+// danach nicht filtern (source=google → INVALID_REQUEST), also an der Antwort erkennen:
+//   Google: copyright "© Google", pano_id mit 22 Zeichen
+//   Nutzer: copyright "© <Name>",  pano_id "CAoS…" mit 36 bzw. 44 Zeichen
+// Nutzer-Uploads sind oft falsch verortet – Bild und Loesung passen dann nicht zusammen.
+function isOfficialGooglePano(meta) {
+  return !!meta.copyright?.startsWith('© Google') && /^[\w-]{22}$/.test(meta.pano_id);
+}
+
+// Custom-Bounds ({ lat: [sued, nord], lng: [west, ost] }) → Leaflet-Bounds
+function boundsToPlayArea(cb) {
+  return [[cb.lat[0], cb.lng[0]], [cb.lat[1], cb.lng[1]]];
+}
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const jitter = (v, span) => v + (Math.random() - 0.5) * span;
+
+// Liefert pro Versuch einen Suchpunkt samt Suchradius in Metern
+function seedGenerator(mode, customBounds) {
   if (mode === 'beruehmt') {
-    for (let i = 0; i < maxTries; i++) {
-      const [seedLat, seedLng] = FAMOUS_PLACES[Math.floor(Math.random() * FAMOUS_PLACES.length)];
-      const meta = await fetchNearestPanorama(seedLat, seedLng, 3000, source);
-      if (meta.status !== 'OK' || !meta.pano_id) continue;
-      if (usedPanoIds.has(meta.pano_id)) continue;
-      console.log(`[beruehmt] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
-      return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
-    }
-    throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
+    // Leicht streuen: direkt am Wahrzeichen ist fast immer ein Nutzer-Panorama das
+    // naechste – mit "nur Google" wuerde sonst jedes Mal derselbe Treffer verworfen.
+    return () => {
+      const [lat, lng] = pick(FAMOUS_PLACES);
+      return { lat: jitter(lat, 0.01), lng: jitter(lng, 0.01), radius: 3000 };
+    };
   }
-
   if (mode === 'grossstaedte') {
-    for (let i = 0; i < maxTries; i++) {
-      const [seedLat, seedLng] = CITIES[Math.floor(Math.random() * CITIES.length)];
-      const jLat = seedLat + (Math.random() - 0.5) * 0.05;
-      const jLng = seedLng + (Math.random() - 0.5) * 0.05;
-      const meta = await fetchNearestPanorama(jLat, jLng, 2000, source);
-      if (meta.status !== 'OK' || !meta.pano_id) continue;
-      if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
-        console.log(`[grossstaedte] Übersprungen (nicht Google): "${meta.copyright}"`);
-        continue;
-      }
-      if (usedPanoIds.has(meta.pano_id)) continue;
-      console.log(`[grossstaedte] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
-      return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
-    }
-    throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
+    return () => {
+      const [lat, lng] = pick(CITIES);
+      return { lat: jitter(lat, 0.05), lng: jitter(lng, 0.05), radius: 2000 };
+    };
   }
+  if (mode === 'custom' && customBounds) {
+    const [[south, west], [north, east]] = boundsToPlayArea(customBounds);
+    // Radius an die Gebietsgroesse koppeln: 10 km Suchradius in einem Stadtteil
+    // landen meist ausserhalb und verbrennen nur Versuche.
+    const halfDiagonalM = distanceKm(south, west, north, east) * 500;
+    const radius = Math.round(Math.min(10000, Math.max(50, halfDiagonalM)));
+    return () => ({
+      lat: south + Math.random() * (north - south),
+      // Nach Schwenken ueber die Datumsgrenze liefert Leaflet Laengen jenseits ±180,
+      // darauf antwortet Google nur mit NOT_FOUND.
+      lng: normalizeLng(west + Math.random() * (east - west)),
+      radius,
+    });
+  }
+  const regions = mode === 'europa' ? REGIONS_EUROPA : REGIONS_WELTWEIT;
+  return () => {
+    const r = pick(regions);
+    return {
+      lat: r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]),
+      lng: r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]),
+      radius: 10000,
+    };
+  };
+}
 
-  const regions = mode === 'custom' && customBounds ? [customBounds]
-    : mode === 'europa' ? REGIONS_EUROPA
-    : REGIONS_WELTWEIT;
-  for (let i = 0; i < maxTries; i++) {
-    const r = regions[Math.floor(Math.random() * regions.length)];
-    const seedLat = r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]);
-    const seedLng = r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]);
-    const meta = await fetchNearestPanorama(seedLat, seedLng, 10000, source);
-    if (meta.status !== 'OK' || !meta.pano_id) {
-      console.log(`[${mode}] Versuch ${i + 1}: kein Panorama bei (${seedLat.toFixed(3)}, ${seedLng.toFixed(3)})`);
-      continue;
-    }
-    if (panoramaFilter === 'google_only' && !meta.copyright?.startsWith('© Google')) {
-      console.log(`[${mode}] Versuch ${i + 1}: Übersprungen (nicht Google): "${meta.copyright}"`);
-      continue;
-    }
-    if (usedPanoIds.has(meta.pano_id)) {
-      console.log(`[${mode}] Versuch ${i + 1}: Panorama bereits benutzt, überspringe`);
-      continue;
-    }
-    console.log(`[${mode}] Panorama bei (${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}) nach ${i + 1} Versuch(en) [filter: ${panoramaFilter}]`);
-    return { lat: meta.location.lat, lng: meta.location.lng, pano_id: meta.pano_id, label: `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}` };
+// Warum taugt der Treffer nicht? null = passt.
+function rejectReason(meta, seed, playArea, googleOnly, usedPanos) {
+  if (meta.status !== 'OK' || !meta.pano_id) {
+    return `kein Panorama bei (${seed.lat.toFixed(3)}, ${seed.lng.toFixed(3)})`;
   }
-  throw new Error(`Kein Street View gefunden (Modus "${mode}", Filter "${panoramaFilter}", ${maxTries} Versuche)`);
+  const { lat, lng } = meta.location;
+  // Google liefert vereinzelt Panoramen weit jenseits des Radius (beobachtet: 470 km
+  // bei 5 km Radius) – falsch verortete Nutzer-Uploads.
+  const distM = distanceKm(seed.lat, seed.lng, lat, lng) * 1000;
+  if (distM > seed.radius * 1.1 + 50) {
+    return `Panorama ${Math.round(distM)} m vom Suchpunkt, Radius nur ${seed.radius} m`;
+  }
+  // Der Suchradius reicht ueber den Gebietsrand hinaus – der Treffer selbst muss drin liegen
+  if (!isInsidePlayArea(lat, lng, playArea)) {
+    return `ausserhalb des Spielgebiets (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+  }
+  if (googleOnly && !isOfficialGooglePano(meta)) {
+    return `kein offizielles Google-Panorama ("${meta.copyright}")`;
+  }
+  // Orte aus diesem Spiel meiden – nicht nur dieselbe pano_id, auch Nachbar-Panoramen
+  // derselben Stelle (anderes Aufnahmedatum, ein paar Meter weiter). Der Mindestabstand
+  // richtet sich nach dem Suchradius, damit kleine Custom-Gebiete nicht sofort ausgehen.
+  const minSpacingM = Math.min(1000, seed.radius / 3);
+  const near = usedPanos.find((u) =>
+    u.pano_id === meta.pano_id || distanceKm(u.lat, u.lng, lat, lng) * 1000 < minSpacingM
+  );
+  if (near) {
+    return near.pano_id === meta.pano_id
+      ? 'Panorama bereits benutzt'
+      : `zu nah an einem Ort aus diesem Spiel (< ${Math.round(minSpacingM)} m)`;
+  }
+  return null;
+}
+
+// usedPanos: [{ pano_id, lat, lng }] – bereits gespielte Orte dieses Spiels
+async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panorama = panoramaOptions(), usedPanos = [], maxTries = 40) {
+  const { googleOnly, outdoorOnly } = panorama;
+  const source = outdoorOnly ? 'outdoor' : 'default';
+  const playArea = mode === 'custom' && customBounds ? boundsToPlayArea(customBounds) : null;
+  const nextSeed = seedGenerator(mode, customBounds);
+  const tag = `[${mode}${googleOnly ? ' · nur Google' : ''}${outdoorOnly ? ' · outdoor' : ''}]`;
+
+  for (let i = 0; i < maxTries; i++) {
+    const seed = nextSeed();
+    const meta = await fetchNearestPanorama(seed.lat, seed.lng, seed.radius, source);
+    const reason = rejectReason(meta, seed, playArea, googleOnly, usedPanos);
+    if (reason) {
+      console.log(`${tag} Versuch ${i + 1}: ${reason}`);
+      continue;
+    }
+    const { lat, lng } = meta.location;
+    console.log(`${tag} Panorama bei (${lat.toFixed(4)}, ${lng.toFixed(4)}) nach ${i + 1} Versuch(en)`);
+    return { lat, lng, pano_id: meta.pano_id, label: `${lat.toFixed(4)}, ${lng.toFixed(4)}` };
+  }
+  const tips = [playArea && 'größeres Gebiet wählen', googleOnly && 'Nutzer-Panoramen zulassen'].filter(Boolean);
+  throw new Error(`Kein Street View gefunden (Modus "${mode}", ${maxTries} Versuche)${tips.length ? ` – ${tips.join(' oder ')}` : ''}`);
+}
+
+function normalizeLng(lng) {
+  return ((lng + 180) % 360 + 360) % 360 - 180;
 }
 
 // Liegt der Punkt im Spielgebiet? Ohne Gebiet ist alles erlaubt.
 // Spiegelt isInsidePlayArea() aus client/src/playArea.js – dort wird der Klick schon
 // abgefangen, hier zaehlt es wirklich: ein manipulierter Client kaeme sonst durch.
+// Dient ausserdem beim Suchen als Grenze fuer das Panorama selbst.
 function isInsidePlayArea(lat, lng, playArea) {
   if (!playArea) return true;
   const [[south, west], [north, east]] = playArea;
   if (lat < Math.min(south, north) || lat > Math.max(south, north)) return false;
   if (Math.abs(east - west) >= 360) return true;
-  const norm = (v) => ((v + 180) % 360 + 360) % 360 - 180;
-  const l = norm(lng), w = norm(west), e = norm(east);
+  const l = normalizeLng(lng), w = normalizeLng(west), e = normalizeLng(east);
   return w <= e ? l >= w && l <= e : l >= w || l <= e;
 }
 
@@ -324,7 +414,7 @@ function finishRound(session, code) {
     const dist = pin
       ? distanceKm(session.location.lat, session.location.lng, pin.lat, pin.lng)
       : 99999;
-    const points = pin ? Math.max(1, Math.round(10000 / (1 + dist / 10))) : 0;
+    const points = pin ? scorePoints(dist, session.playArea) : 0;
     p.score += points;
     return { id: p.id, name: p.name, dist, points, totalScore: p.score, pin: pin || null, left: p.temporarilyGone || false };
   });
@@ -355,12 +445,12 @@ function activePlayers(session) {
   return session.players.filter((p) => !p.temporarilyGone);
 }
 
-async function doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown) {
+async function doStartGame(session, code, mode, customBounds, panorama, pinCountdown) {
   if (session.round >= TOTAL_ROUNDS) {
     session.round = 0;
     session.players.forEach((p) => (p.score = 0));
     session.leftThisRound = [];
-    session.usedPanoIds = new Set();
+    session.usedPanos = [];
   }
 
   if (session.countdownTimer) {
@@ -371,12 +461,12 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   if (pinCountdown !== undefined) session.pinCountdown = pinCountdown;
 
   const gameMode = mode || session.mode || 'weltweit';
-  const filter = panoramaFilter || session.panoramaFilter || 'all';
   session.mode = gameMode;
-  session.panoramaFilter = filter;
+  // Folgerunden (player-ready) kommen ohne Einstellungen – dann gilt die gespeicherte
+  if (panorama || !session.panorama) session.panorama = panoramaOptions(panorama);
   if (customBounds) session.customBounds = customBounds;
 
-  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, filter, session.usedPanoIds || new Set());
+  const base = await randomStreetViewLocation(gameMode, session.customBounds || null, session.panorama, session.usedPanos || []);
   const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
   const cb = session.customBounds;
@@ -388,7 +478,7 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   let mapBounds = null;
   let playArea = null;
   if (gameMode === 'custom' && cb) {
-    mapBounds = [[cb.lat[0], cb.lng[0]], [cb.lat[1], cb.lng[1]]];
+    mapBounds = boundsToPlayArea(cb);
     playArea = mapBounds;
   } else {
     const modeRegions = gameMode === 'europa' ? REGIONS_EUROPA : null;
@@ -397,8 +487,8 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
   session.mapBounds = mapBounds;
   session.playArea = playArea;
 
-  if (!session.usedPanoIds) session.usedPanoIds = new Set();
-  session.usedPanoIds.add(base.pano_id);
+  if (!session.usedPanos) session.usedPanos = [];
+  session.usedPanos.push({ pano_id: base.pano_id, lat: base.lat, lng: base.lng });
 
   session.round = (session.round || 0) + 1;
   session.location = { ...base, heading };
@@ -419,9 +509,15 @@ async function doStartGame(session, code, mode, customBounds, panoramaFilter, pi
 
 // doStartGame kann scheitern (Google lehnt ab, kein Panorama gefunden). Ohne diesen
 // Wrapper wurde daraus eine unbehandelte Promise-Rejection und die Lobby wartete stumm.
-async function startGameSafe(session, code, mode, customBounds, panoramaFilter, pinCountdown) {
+async function startGameSafe(session, code, mode, customBounds, panorama, pinCountdown) {
+  // Die Suche dauert bis zu einigen Sekunden, die Phase bleibt solange unveraendert.
+  // Ein zweiter Trigger (Doppelklick, Host "Naechste Runde" + letzter Spieler bereit)
+  // wuerde sonst parallel suchen – mit derselben Liste benutzter Orte, also moeglicherweise
+  // doppeltem Ort, und die Runde zaehlte zweimal hoch.
+  if (session.starting) return;
+  session.starting = true;
   try {
-    await doStartGame(session, code, mode, customBounds, panoramaFilter, pinCountdown);
+    await doStartGame(session, code, mode, customBounds, panorama, pinCountdown);
   } catch (err) {
     const isGoogle = err instanceof GoogleApiError;
     if (isGoogle) console.error(`[game] Google Maps ${err.status}: ${err.message}\n${SETUP_HINT}`);
@@ -435,6 +531,8 @@ async function startGameSafe(session, code, mode, customBounds, panoramaFilter, 
         : err.message,
       code: isGoogle ? err.status : 'NO_PANORAMA',
     });
+  } finally {
+    session.starting = false;
   }
 }
 
@@ -448,19 +546,32 @@ app.get('/api/maps-key', (_, res) => res.json({ key: BROWSER_KEY, configured: !!
 // Solo-Modus: Neue Runde starten – gibt Panorama-Daten zurück ohne Session
 app.get('/api/solo/start-round', async (req, res) => {
   const mode = req.query.mode || 'weltweit';
-  const panoramaFilter = req.query.panoramaFilter || 'all';
+  const panorama = panoramaOptions({
+    googleOnly: req.query.googleOnly !== '0',
+    outdoorOnly: req.query.outdoorOnly !== '0',
+  });
   let customBounds = null;
   if (req.query.customBounds) {
     try { customBounds = JSON.parse(req.query.customBounds); } catch (_) {}
   }
+  // Orte der bisherigen Runden – der Server merkt sich im Solo-Modus nichts,
+  // deshalb schickt der Client sie mit.
+  let usedPanos = [];
+  if (req.query.used) {
+    try {
+      usedPanos = JSON.parse(req.query.used)
+        .filter((u) => typeof u?.pano_id === 'string' && Number.isFinite(u.lat) && Number.isFinite(u.lng))
+        .slice(0, 50);
+    } catch (_) {}
+  }
   try {
-    const base = await randomStreetViewLocation(mode, customBounds, panoramaFilter);
+    const base = await randomStreetViewLocation(mode, customBounds, panorama, usedPanos);
     const heading = await fetchAutoHeading(base.lat, base.lng, base.pano_id);
 
     let mapBounds = null;
     let playArea = null;
     if (mode === 'custom' && customBounds) {
-      mapBounds = [[customBounds.lat[0], customBounds.lng[0]], [customBounds.lat[1], customBounds.lng[1]]];
+      mapBounds = boundsToPlayArea(customBounds);
       playArea = mapBounds;
     } else if (mode === 'europa') {
       mapBounds = regionsToBounds(REGIONS_EUROPA);
@@ -503,7 +614,7 @@ io.on('connection', (socket) => {
       location: null,
       pins: {},
       round: 0,
-      usedPanoIds: new Set(),
+      usedPanos: [],
       pinCountdown: 30,
     };
     socket.join(code);
@@ -626,11 +737,11 @@ io.on('connection', (socket) => {
   });
 
   // Spiel starten (nur Host) – Auto-Heading via Metadata API
-  socket.on('start-game', async ({ mode, customBounds, panoramaFilter, pinCountdown } = {}) => {
+  socket.on('start-game', async ({ mode, customBounds, panorama, pinCountdown } = {}) => {
     const code = socket.data.code;
     const session = sessions[code];
     if (!session || session.host !== socket.id) return;
-    await startGameSafe(session, code, mode, customBounds, panoramaFilter, pinCountdown);
+    await startGameSafe(session, code, mode, customBounds, panorama, pinCountdown);
   });
 
   // Spieler signalisiert Bereitschaft für nächste Runde (per Name – socketId kann sich ändern)
@@ -692,6 +803,28 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Lobby verlassen (Zurueck-Button). Host → Session aufloesen, alle Spieler landen
+  // auf der Startseite. Spieler → nur sich selbst austragen.
+  socket.on('leave-session', () => {
+    const code = socket.data.code;
+    const session = sessions[code];
+    socket.leave(code);
+    socket.data.code = null;
+    if (!session) return;
+
+    if (session.host === socket.id) {
+      if (session.countdownTimer) clearTimeout(session.countdownTimer);
+      delete sessions[code];
+      io.to(code).emit('host-left');
+      console.log('host left (lobby):', code);
+      return;
+    }
+
+    session.players = session.players.filter((p) => p.id !== socket.id);
+    io.to(code).emit('players-updated', activePlayers(session));
+    console.log('player left (lobby):', socket.data.name, code);
+  });
+
   // Zurück zur Lobby (nur Host) – setzt Spiel vollständig zurück
   socket.on('back-to-lobby', () => {
     const code = socket.data.code;
@@ -707,7 +840,7 @@ io.on('connection', (socket) => {
     session.mapBounds = null;
     session.playArea = null;
     session.players.forEach((p) => { p.score = 0; p.spectator = false; p.temporarilyGone = false; });
-    session.usedPanoIds = new Set();
+    session.usedPanos = [];
     io.to(code).emit('back-to-lobby');
   });
 

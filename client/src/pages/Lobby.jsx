@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import socket from '../socket.js';
+import { scoreExamples } from '../playArea.js';
 
 const MODES = [
   { id: 'weltweit', label: '🌍 Weltweit' },
@@ -12,19 +13,22 @@ const MODES = [
   { id: 'custom', label: '✏️ Custom' },
 ];
 
-const PANORAMA_FILTERS = [
-  { id: 'all',         label: '🌐 Alle Panoramen',        desc: 'Straße, Indoor, Nutzer-Fotos' },
-  { id: 'outdoor',     label: '🚶 Kein Indoor',            desc: 'Nur Außenaufnahmen' },
-  { id: 'google_only', label: '🚗 Nur Google Street View', desc: 'Offizielles Google-Kameramobil' },
+const PANORAMA_SOURCES = [
+  { id: 'google', label: '🚗 Nur Google Street View', desc: 'Offizielle Aufnahmen, korrekt verortet' },
+  { id: 'all',    label: '👥 Auch Nutzer-Panoramen',  desc: 'Mehr Orte, oft falsch verortet' },
 ];
 
-export default function Lobby({ session, onSessionUpdate }) {
+export default function Lobby({ session, onSessionUpdate, onLeave }) {
   const [players, setPlayers] = useState(session.players || []);
   const [mode, setMode] = useState('weltweit');
-  const [panoramaFilter, setPanoramaFilter] = useState('all');
+  const [panoramaSource, setPanoramaSource] = useState('google');
+  const [outdoorOnly, setOutdoorOnly] = useState(true);
   const [pinCountdown, setPinCountdown] = useState(30);
   const [countdownEnabled, setCountdownEnabled] = useState(false);
   const [startError, setStartError] = useState(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  // Aktueller Ausschnitt der Custom-Karte – nur fuer die Punkte-Beispiele
+  const [customArea, setCustomArea] = useState(null);
   const customMapRef = useRef(null);
   const customMapInstance = useRef(null);
 
@@ -58,6 +62,12 @@ export default function Lobby({ session, onSessionUpdate }) {
       attribution: '© OpenStreetMap'
     }).addTo(map);
     customMapInstance.current = map;
+    const syncArea = () => {
+      const b = map.getBounds();
+      setCustomArea([[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]]);
+    };
+    map.on('moveend', syncArea);
+    syncArea();
     return () => {
       if (customMapInstance.current) {
         customMapInstance.current.remove();
@@ -66,14 +76,22 @@ export default function Lobby({ session, onSessionUpdate }) {
     };
   }, [mode]);
 
+  // Host loest die Session auf (alle Spieler landen auf der Startseite),
+  // ein Spieler traegt sich nur selbst aus.
+  function leaveLobby() {
+    socket.emit('leave-session');
+    onLeave();
+  }
+
   function startGame() {
     setStartError(null);
     const countdown = countdownEnabled ? pinCountdown : 0;
+    const panorama = { googleOnly: panoramaSource === 'google', outdoorOnly };
     if (mode === 'custom' && customMapInstance.current) {
       const b = customMapInstance.current.getBounds();
       socket.emit('start-game', {
         mode: 'custom',
-        panoramaFilter,
+        panorama,
         customBounds: {
           lat: [b.getSouth(), b.getNorth()],
           lng: [b.getWest(), b.getEast()],
@@ -81,14 +99,61 @@ export default function Lobby({ session, onSessionUpdate }) {
         pinCountdown: countdown,
       });
     } else {
-      socket.emit('start-game', { mode, panoramaFilter, pinCountdown: countdown });
+      socket.emit('start-game', { mode, panorama, pinCountdown: countdown });
     }
   }
 
   return (
     <div className="center" style={{ padding: 16 }}>
       <div className="card" style={{ width: '100%', maxWidth: 480 }}>
-        <h1>🎮 Lobby</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+          <button
+            onClick={() => (session.isHost && players.length > 0 ? setConfirmLeave(true) : leaveLobby())}
+            style={{ margin: 0, padding: '6px 12px', background: '#2a2a3e', fontSize: '0.9rem', width: 'auto' }}
+          >
+            ← Zurück
+          </button>
+          <h1 style={{ margin: 0, fontSize: '1.5rem' }}>🎮 Lobby</h1>
+        </div>
+
+        {confirmLeave && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)', padding: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+          }}>
+            <div style={{
+              background: '#1e1e2e', borderRadius: 10, padding: '24px 28px', maxWidth: 320,
+              textAlign: 'center', color: '#fff', boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
+            }}>
+              <div style={{ fontSize: '1.3rem', marginBottom: 8 }}>⏹ Session beenden?</div>
+              <div style={{ fontSize: '0.85rem', color: '#aaa', marginBottom: 20 }}>
+                {players.length === 1 ? 'Der Spieler wird' : `Alle ${players.length} Spieler werden`}
+                {' '}zurück zur Startseite geschickt.
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button
+                  onClick={() => setConfirmLeave(false)}
+                  style={{
+                    background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 6,
+                    padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem', margin: 0,
+                  }}
+                >
+                  Abbrechen
+                </button>
+                <button
+                  onClick={leaveLobby}
+                  style={{
+                    background: '#b41e1e', border: 'none', borderRadius: 6,
+                    padding: '8px 18px', color: '#fff', cursor: 'pointer', fontSize: '0.9rem',
+                    fontWeight: 'bold', margin: 0,
+                  }}
+                >
+                  Ja, beenden
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div style={{ textAlign: 'center', marginBottom: 16 }}>
           <p style={{ color: '#aaa', fontSize: '0.85rem' }}>Session-Code</p>
@@ -160,12 +225,12 @@ export default function Lobby({ session, onSessionUpdate }) {
             </div>
 
             <div style={{ marginBottom: 12 }}>
-              <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Panorama-Filter</p>
+              <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: 6 }}>Panorama-Quelle</p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {PANORAMA_FILTERS.map((f) => (
+                {PANORAMA_SOURCES.map((f) => (
                   <button
                     key={f.id}
-                    onClick={() => setPanoramaFilter(f.id)}
+                    onClick={() => setPanoramaSource(f.id)}
                     style={{
                       margin: 0,
                       padding: '8px 12px',
@@ -174,16 +239,25 @@ export default function Lobby({ session, onSessionUpdate }) {
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
-                      background: panoramaFilter === f.id ? '#4ade80' : '#2a2a2a',
-                      color: panoramaFilter === f.id ? '#111' : '#fff',
-                      border: panoramaFilter === f.id ? 'none' : '1px solid #444',
+                      background: panoramaSource === f.id ? '#4ade80' : '#2a2a2a',
+                      color: panoramaSource === f.id ? '#111' : '#fff',
+                      border: panoramaSource === f.id ? 'none' : '1px solid #444',
                     }}
                   >
-                    <span style={{ fontWeight: panoramaFilter === f.id ? 700 : 400 }}>{f.label}</span>
+                    <span style={{ fontWeight: panoramaSource === f.id ? 700 : 400 }}>{f.label}</span>
                     <span style={{ fontSize: '0.7rem', opacity: 0.7, marginLeft: 8 }}>{f.desc}</span>
                   </button>
                 ))}
               </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', margin: '8px 0 0' }}>
+                <input
+                  type="checkbox"
+                  checked={outdoorOnly}
+                  onChange={(e) => setOutdoorOnly(e.target.checked)}
+                  style={{ width: 'auto', margin: 0 }}
+                />
+                <span style={{ fontSize: '0.85rem', color: '#ccc' }}>🚪 Keine Indoor-Aufnahmen</span>
+              </label>
             </div>
 
             {mode === 'custom' && (
@@ -224,9 +298,14 @@ export default function Lobby({ session, onSessionUpdate }) {
               background: '#1a1a2e', borderRadius: 8, padding: '10px 14px', marginBottom: 12,
               fontSize: '0.78rem', color: '#888', lineHeight: 1.7,
             }}>
-              📊 <strong style={{ color: '#bbb' }}>Punkteformel:</strong> 10.000 ÷ (1 + km/10)
+              📊 <strong style={{ color: '#bbb' }}>Punkte:</strong> bis 10 m volle 10.000, danach fallend
+              {mode === 'custom' && ' – Maßstab passt sich dem Ausschnitt an'}
               <br />
-              <span>0 km → 10.000 &nbsp;·&nbsp; 10 km → ~5.000 &nbsp;·&nbsp; 100 km → ~1.000 &nbsp;·&nbsp; kein Pin → 0</span>
+              <span>
+                {scoreExamples(mode === 'custom' ? customArea : null)
+                  .map((e) => `${e.label} → ${e.points.toLocaleString()}  ·  `)}
+                kein Pin → 0
+              </span>
             </div>
 
             {startError && (

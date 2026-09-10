@@ -175,6 +175,8 @@ export default function App() {
   function handleLeaveSession() {
     clearSession(sessionRef.current);
     setSavedSessions(Object.values(loadAllSessions()));
+    // Sonst liest Home den ?join=-Link erneut aus und zeigt wieder den Beitritts-Dialog
+    window.history.replaceState(null, '', window.location.pathname);
     setPage('home');
     setSession(null);
   }
@@ -203,7 +205,7 @@ export default function App() {
     return <SoloGame onBack={() => setPage('home')} />;
 
   if (page === 'lobby')
-    return <Lobby session={session} onSessionUpdate={(s) => setSession(s)} />;
+    return <Lobby session={session} onSessionUpdate={(s) => setSession(s)} onLeave={handleLeaveSession} />;
 
   if (page === 'game')
     return <Game session={session} panoData={gamePano} alreadyPinned={alreadyPinned} isSpectator={isSpectator} />;
