@@ -68,8 +68,12 @@ docker run -p 3001:3001 \
 | 🏛️ Berühmte Orte | Wahrzeichen weltweit |
 | ✏️ Custom | Frei gewählter Kartenausschnitt |
 
-Die Orte werden so gezogen, dass jedes Panorama ungefähr gleich wahrscheinlich ist –
-Städte mit vielen Straßen kommen entsprechend häufig dran (Details in `randomStreetViewLocation`).
+Bei Weltweit und Europa wird pro Runde zuerst eine Region gezogen (alle gleich
+wahrscheinlich, pro Spiel keine doppelt), damit ein Spiel über die Welt verteilt ist statt
+dort, wo Street View am dichtesten ist. Innerhalb der Region – und im Custom-Gebiet – ist
+jedes Panorama ungefähr gleich wahrscheinlich, Städte mit vielen Straßen kommen also
+entsprechend häufig dran. Punkte im offenen Wasser werden vorab verworfen (Landmaske).
+Regionen und Gewichtung stehen in `REGIONS_WELTWEIT` / `REGIONS_EUROPA` in `server/index.js`.
 
 ## Features
 

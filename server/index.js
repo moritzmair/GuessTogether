@@ -214,34 +214,86 @@ function cleanName(name) {
   return typeof name === 'string' ? name.replace(/\s+/g, ' ').trim().slice(0, 20) : '';
 }
 
+// Weltweit/Europa: Pro Runde wird zuerst eine Region gezogen – alle gleich wahrscheinlich,
+// pro Spiel keine doppelt – und erst darin ein Panorama. Vorher entschied die Street-View-
+// Dichte mit: Die USA haben viel Flaeche und fast ueberall Aufnahmen, ein grosser Teil der
+// Runden landete dort. Innerhalb einer Region bleibt jedes Panorama gleich wahrscheinlich,
+// Staedte kommen also weiter oft dran.
+// Die Boxen duerfen grosszuegig sein, Wasser filtert die Landmaske. Laender ohne Google-
+// Abdeckung (China, grosse Teile Afrikas) sind ausgespart – sie kosteten nur leere Anfragen.
 const REGIONS_WELTWEIT = [
-  { lat: [35, 70],  lng: [-10, 40]  },
-  { lat: [25, 50],  lng: [-125, -65] },
-  { lat: [-35, 5],  lng: [-75, -35] },
-  { lat: [-35, 37], lng: [10, 50]   },
-  { lat: [5, 55],   lng: [60, 145]  },
-  { lat: [-45, -10],lng: [110, 155] },
+  { name: 'USA & Kanada', boxes: [
+    { lat: [31.3, 49], lng: [-125, -67] }, { lat: [25, 31.3], lng: [-100, -80] },
+    { lat: [49, 56], lng: [-130, -52] }, { lat: [43.5, 49], lng: [-67, -52] },
+  ] },
+  { name: 'Mexiko & Mittelamerika', boxes: [
+    { lat: [14.5, 25.8], lng: [-106, -86.5] }, { lat: [25.8, 29], lng: [-106, -100] },
+    { lat: [22.5, 32.5], lng: [-117.2, -114.7] }, { lat: [22.5, 31.3], lng: [-114.7, -106] },
+    { lat: [7, 15], lng: [-91, -77] },
+  ] },
+  { name: 'Andenstaaten', boxes: [{ lat: [-18, 12], lng: [-81, -67] }] },
+  { name: 'Brasilien', boxes: [{ lat: [-33, -3], lng: [-58, -34.5] }] },
+  { name: 'Südkegel', boxes: [{ lat: [-55, -22], lng: [-76, -58] }] },
+  { name: 'Westeuropa', boxes: [
+    { lat: [43, 55], lng: [-5, 15] }, { lat: [50, 55.5], lng: [-10.5, -5] }, { lat: [55.5, 59], lng: [-7.5, -1.5] },
+  ] },
+  { name: 'Südeuropa', boxes: [
+    { lat: [36, 43], lng: [-9.5, 3.5] }, { lat: [36.5, 43], lng: [7, 15] }, { lat: [35, 46], lng: [15, 26] },
+  ] },
+  { name: 'Osteuropa', boxes: [{ lat: [46, 55], lng: [15, 40] }, { lat: [55, 61], lng: [32, 50] }] },
+  { name: 'Nordeuropa', boxes: [{ lat: [55, 71], lng: [4, 32] }, { lat: [63, 66.6], lng: [-24.5, -13.5] }] },
+  { name: 'Türkei & Nahost', boxes: [
+    { lat: [36, 42], lng: [26, 45] }, { lat: [29, 33.5], lng: [34, 36] }, { lat: [22.5, 26.5], lng: [50.7, 56.5] },
+  ] },
+  { name: 'Afrika', boxes: [
+    { lat: [-35, -17], lng: [16, 33] }, { lat: [-5, 5], lng: [29, 42] },
+    { lat: [4.5, 16.7], lng: [-17.5, 3] }, { lat: [33, 37.5], lng: [7.5, 11.5] },
+  ] },
+  { name: 'Südasien', boxes: [
+    { lat: [8, 31], lng: [69, 88] }, { lat: [6, 10], lng: [79.5, 82] }, { lat: [21, 26.5], lng: [88, 92.5] },
+  ] },
+  { name: 'Südostasien', boxes: [
+    { lat: [7, 20.5], lng: [97.5, 105.5] }, { lat: [1, 7], lng: [100, 119] },
+    { lat: [-9, -5.5], lng: [105, 116] }, { lat: [5, 19], lng: [119, 126.5] },
+  ] },
+  { name: 'Ostasien', boxes: [
+    { lat: [31, 45.5], lng: [129.7, 146] }, { lat: [34, 38.6], lng: [126, 129.7] }, { lat: [21.9, 25.3], lng: [120, 122] },
+  ] },
+  { name: 'Ozeanien', boxes: [
+    { lat: [-39, -12], lng: [113, 154] }, { lat: [-43.7, -40.5], lng: [144.5, 148.5] }, { lat: [-46.7, -34.4], lng: [166.4, 178.6] },
+  ] },
 ];
 
 const REGIONS_EUROPA = [
-  { lat: [36, 44], lng: [-9, 3]   },  // Iberische Halbinsel
-  { lat: [42, 51], lng: [-5, 8]   },  // Frankreich, Benelux
-  { lat: [50, 59], lng: [-8, 2]   },  // Britische Inseln
-  { lat: [46, 55], lng: [6, 19]   },  // D, A, CH, CZ, SK
-  { lat: [55, 71], lng: [4, 28]   },  // Skandinavien
-  { lat: [37, 47], lng: [7, 18]   },  // Italien
-  { lat: [54, 70], lng: [20, 30]  },  // Polen, Baltikum, Finnland
-  { lat: [38, 47], lng: [13, 28]  },  // Balkan
-  { lat: [44, 52], lng: [22, 40]  },  // Ukraine, Rumänien, Ungarn
-  { lat: [35, 42], lng: [20, 28]  },  // Griechenland
+  { name: 'Iberische Halbinsel', boxes: [{ lat: [36, 44], lng: [-9, 3] }] },
+  { name: 'Frankreich, Benelux', boxes: [{ lat: [42, 51], lng: [-5, 8] }] },
+  { name: 'Britische Inseln', boxes: [{ lat: [50, 59], lng: [-8, 2] }] },
+  { name: 'D, A, CH, CZ, SK', boxes: [{ lat: [46, 55], lng: [6, 19] }] },
+  { name: 'Skandinavien', boxes: [{ lat: [55, 71], lng: [4, 28] }] },
+  { name: 'Italien', boxes: [{ lat: [37, 47], lng: [7, 18] }] },
+  { name: 'Polen, Baltikum, Finnland', boxes: [{ lat: [54, 70], lng: [20, 30] }] },
+  { name: 'Balkan', boxes: [{ lat: [38, 47], lng: [13, 28] }] },
+  { name: 'Ukraine, Rumänien, Ungarn', boxes: [{ lat: [44, 52], lng: [22, 40] }] },
+  { name: 'Griechenland', boxes: [{ lat: [35, 42], lng: [20, 28] }] },
 ];
 
 function regionsToBounds(regions) {
-  const minLat = Math.min(...regions.map((r) => r.lat[0]));
-  const maxLat = Math.max(...regions.map((r) => r.lat[1]));
-  const minLng = Math.min(...regions.map((r) => r.lng[0]));
-  const maxLng = Math.max(...regions.map((r) => r.lng[1]));
+  const boxes = regions.flatMap((r) => r.boxes);
+  const minLat = Math.min(...boxes.map((b) => b.lat[0]));
+  const maxLat = Math.max(...boxes.map((b) => b.lat[1]));
+  const minLng = Math.min(...boxes.map((b) => b.lng[0]));
+  const maxLng = Math.max(...boxes.map((b) => b.lng[1]));
   return [[minLat, minLng], [maxLat, maxLng]];
+}
+
+const inRegion = (region, lat, lng) =>
+  region.boxes.some((b) => lat >= b.lat[0] && lat <= b.lat[1] && lng >= b.lng[0] && lng <= b.lng[1]);
+
+// Beruehmt, Grossstaedte und Custom mit Gebiet ziehen ihre Punkte selbst (seedGenerator)
+function regionsForMode(mode, customBounds) {
+  if (mode === 'europa') return REGIONS_EUROPA;
+  if (mode === 'beruehmt' || mode === 'grossstaedte' || (mode === 'custom' && customBounds)) return null;
+  return REGIONS_WELTWEIT;
 }
 
 const FAMOUS_PLACES = [
@@ -307,6 +359,15 @@ function boundsToPlayArea(cb) {
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const jitter = (v, span) => v + (Math.random() - 0.5) * span;
 
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // Suchpunkte im offenen Wasser gar nicht erst abfragen (siehe landMask.js). Findet sich
 // in 200 Zuegen kein Punkt an Land, ist das Gebiet laut Maske reines Wasser – etwa eine
 // kleine Insel, die in den groben Kuestendaten fehlt. Dann ab sofort ungefiltert suchen.
@@ -324,7 +385,24 @@ function onLand(nextSeed) {
   };
 }
 
-// Liefert pro Versuch einen Suchpunkt samt Suchradius in Metern.
+// Suchpunkte gleichmaessig ueber eine Region; Boxen nach Flaeche gewichtet
+function regionSeeds(region) {
+  const areas = region.boxes.map((b) =>
+    (b.lat[1] - b.lat[0]) * (b.lng[1] - b.lng[0]) * Math.cos(((b.lat[0] + b.lat[1]) / 2) * Math.PI / 180));
+  const total = areas.reduce((sum, a) => sum + a, 0);
+  return onLand(() => {
+    let r = Math.random() * total;
+    const b = region.boxes.find((_, i) => (r -= areas[i]) <= 0) || region.boxes[region.boxes.length - 1];
+    return {
+      lat: b.lat[0] + Math.random() * (b.lat[1] - b.lat[0]),
+      lng: b.lng[0] + Math.random() * (b.lng[1] - b.lng[0]),
+      radius: 10000,
+    };
+  });
+}
+
+// Liefert pro Versuch einen Suchpunkt samt Suchradius in Metern (Beruehmt, Grossstaedte,
+// Custom; Weltweit/Europa laufen ueber regionSeeds).
 // Beruehmt/Grossstaedte streuen nur wenige Kilometer um Punkte an Land – dort braucht es
 // keine Maske, die Kuestendaten waeren auf diese Entfernung ohnehin zu grob.
 function seedGenerator(mode, customBounds) {
@@ -356,15 +434,7 @@ function seedGenerator(mode, customBounds) {
       radius,
     }));
   }
-  const regions = mode === 'europa' ? REGIONS_EUROPA : REGIONS_WELTWEIT;
-  return onLand(() => {
-    const r = pick(regions);
-    return {
-      lat: r.lat[0] + Math.random() * (r.lat[1] - r.lat[0]),
-      lng: r.lng[0] + Math.random() * (r.lng[1] - r.lng[0]),
-      radius: 10000,
-    };
-  });
+  throw new Error(`Kein Suchgebiet fuer Modus "${mode}"`);
 }
 
 // Warum taugt der Treffer nicht? null = passt.
@@ -420,39 +490,64 @@ const SEARCH_PHASES = [
   { name: 'Grobsuche', radius: null, batches: 2 }, // null = seed.radius
 ];
 
+// Findet eine duenn abgedeckte Region nichts, kommt die naechste dran statt einer Fehlermeldung
+const REGION_TRIES = 3;
+
 // usedPanos: [{ pano_id, lat, lng }] – bereits gespielte Orte dieses Spiels
 async function randomStreetViewLocation(mode = 'weltweit', customBounds = null, panorama = panoramaOptions(), usedPanos = []) {
   const { googleOnly, outdoorOnly } = panorama;
-  const source = outdoorOnly ? 'outdoor' : 'default';
-  const playArea = mode === 'custom' && customBounds ? boundsToPlayArea(customBounds) : null;
-  const nextSeed = seedGenerator(mode, customBounds);
+  const ctx = {
+    source: outdoorOnly ? 'outdoor' : 'default',
+    playArea: mode === 'custom' && customBounds ? boundsToPlayArea(customBounds) : null,
+    googleOnly,
+    usedPanos,
+    requests: 0,
+  };
   const tag = `[${mode}${googleOnly ? ' · nur Google' : ''}${outdoorOnly ? ' · outdoor' : ''}]`;
 
-  let requests = 0;
+  let found = null;
+  const regions = regionsForMode(mode, customBounds);
+  if (!regions) {
+    found = await searchPanorama(seedGenerator(mode, customBounds), ctx, tag);
+  } else {
+    // Regionen, die in diesem Spiel noch nicht dran waren; sind alle durch, wieder alle
+    const fresh = regions.filter((r) => !usedPanos.some((u) => inRegion(r, u.lat, u.lng)));
+    for (const region of shuffle(fresh.length ? fresh : regions).slice(0, REGION_TRIES)) {
+      found = await searchPanorama(regionSeeds(region), ctx, `${tag}[${region.name}]`);
+      if (found) break;
+    }
+  }
+  if (found) return found;
+
+  const tips = [ctx.playArea && 'größeres Gebiet wählen', googleOnly && 'Nutzer-Panoramen zulassen'].filter(Boolean);
+  throw new Error(`Kein Street View gefunden (Modus "${mode}", ${ctx.requests} Anfragen)${tips.length ? ` – ${tips.join(' oder ')}` : ''}`);
+}
+
+// Sucht mit den Punkten aus nextSeed nach einem brauchbaren Panorama; null = nichts gefunden
+async function searchPanorama(nextSeed, ctx, tag) {
   for (const phase of SEARCH_PHASES) {
     for (let b = 0; b < phase.batches; b++) {
       const seeds = Array.from({ length: SEARCH_BATCH }, nextSeed);
       const metas = await Promise.all(seeds.map((s) =>
-        fetchNearestPanorama(s.lat, s.lng, phase.radius ?? s.radius, source)));
-      requests += seeds.length;
+        fetchNearestPanorama(s.lat, s.lng, phase.radius ?? s.radius, ctx.source)));
+      ctx.requests += seeds.length;
 
       // Alle Suchpunkte sind unabhaengig gezogen – der erste brauchbare ist so zufaellig wie jeder andere
       for (let i = 0; i < seeds.length; i++) {
-        const reason = rejectReason(metas[i], seeds[i], phase.radius ?? seeds[i].radius, playArea, googleOnly, usedPanos);
+        const reason = rejectReason(metas[i], seeds[i], phase.radius ?? seeds[i].radius, ctx.playArea, ctx.googleOnly, ctx.usedPanos);
         if (reason) {
           // Leere Suchpunkte sind in der Feinsuche die Regel, nur echte Verwerfungen loggen
           if (metas[i].status === 'OK') console.log(`${tag} ${phase.name}: ${reason}`);
           continue;
         }
         const { lat, lng } = metas[i].location;
-        console.log(`${tag} Panorama bei (${lat.toFixed(4)}, ${lng.toFixed(4)}) – ${phase.name}, ${requests} Anfragen`);
+        console.log(`${tag} Panorama bei (${lat.toFixed(4)}, ${lng.toFixed(4)}) – ${phase.name}, ${ctx.requests} Anfragen`);
         return { lat, lng, pano_id: metas[i].pano_id, label: `${lat.toFixed(4)}, ${lng.toFixed(4)}` };
       }
     }
-    console.log(`${tag} ${phase.name} ohne Treffer nach ${requests} Anfragen`);
+    console.log(`${tag} ${phase.name} ohne Treffer nach ${ctx.requests} Anfragen`);
   }
-  const tips = [playArea && 'größeres Gebiet wählen', googleOnly && 'Nutzer-Panoramen zulassen'].filter(Boolean);
-  throw new Error(`Kein Street View gefunden (Modus "${mode}", ${requests} Anfragen)${tips.length ? ` – ${tips.join(' oder ')}` : ''}`);
+  return null;
 }
 
 function normalizeLng(lng) {
